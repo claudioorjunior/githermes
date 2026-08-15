@@ -35,6 +35,10 @@ Or manually: drop this folder into `~/.hermes/plugins/github-prs/` (unified pack
 - Only `@hermes/plugin-sdk`, `react`, and `react/jsx-runtime` are importable.
 - Tailwind classes must already exist in the app's compiled CSS — arbitrary `var()` bracket forms (`bg-[var(--x)]`) are silently dead at runtime. Use the paren shorthand (`text-(--ui-text-tertiary)`) or scoped `<style>` blocks with real theme variables.
 
+## Status & contributing
+
+Early stage — expect bugs; reports and PRs are very welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## License
 
 MIT
