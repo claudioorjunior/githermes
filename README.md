@@ -6,7 +6,7 @@ A single-file desktop plugin (`@hermes/plugin-sdk`) that shows your repository's
 
 | PR list | PR detail |
 | --- | --- |
-| ![PR list pane](docs/pr-list.png) | ![PR detail view](docs/pr-detail.png) |
+| ![PR list pane](docs/pr-list.png?v=2) | ![PR detail view](docs/pr-detail.png) |
 
 ## Features
 
