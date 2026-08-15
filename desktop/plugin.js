@@ -103,6 +103,32 @@ function openExternal(url) {
   if (url) pluginCtx?.os.openExternal(url)
 }
 
+// Issue #1: quote a comment into the active session's composer (draft, NOT sent).
+// Core's composer subscribes to these window events (chat/composer/focus.ts) — the
+// same bus this plugin already uses for pane reveal. No backend, no clipboard.
+const COMPOSER_INSERT = 'hermes:composer-insert'
+const COMPOSER_FOCUS = 'hermes:composer-focus'
+
+export function commentToChatText({ login, verb, timestamp, body, permalink }) {
+  const who = login ? `@${String(login).replace(/^@/, '')}` : '@unknown'
+  const when = timestamp ? ` · ${timestamp}` : ''
+  const quoted = String(body || '').split('\n').map(l => `> ${l}`).join('\n')
+  const parts = [`> **${who}** ${verb || 'commented'}${when}:`, quoted]
+  if (permalink) parts.push('>', `> ${permalink}`)
+  return parts.join('\n')
+}
+
+function sendCommentToChat(c) {
+  const text = commentToChatText(c)
+  if (!text.trim()) return
+  // Defer like core's dispatch() (focus.ts): the composer must focus AFTER this
+  // click handler finishes, or the browser re-focuses the clicked button.
+  window.setTimeout(() => {
+    window.dispatchEvent(new CustomEvent(COMPOSER_INSERT, { detail: { mode: 'block', target: 'main', text } }))
+    window.dispatchEvent(new CustomEvent(COMPOSER_FOCUS, { detail: { target: 'main' } }))
+  }, 0)
+}
+
 async function sh(cmd) {
   const r = await host.request('shell.exec', { command: cmd })
   if (r.code !== 0) throw new Error((r.stderr || r.stdout || `exit ${r.code}`).trim().slice(0, 600))
@@ -360,8 +386,29 @@ const REVIEW_BADGE = {
   DISMISSED: { label: 'dismissed', color: 'var(--ui-text-quaternary)' },
 }
 
+// Issue #1 affordance: quote this comment into the active session's composer.
+// Disabled + native-title hint when no session is active (Radix Tip won't open
+// on a disabled button, hence the title on the wrapper span).
+function SendToChatButton({ comment, className }) {
+  const activeId = useValue(host.state.activeSessionId)
+  const wrap = cn('inline-flex shrink-0', className)
+  const btn = jsxs(Button, {
+    variant: 'ghost',
+    size: 'sm',
+    className: 'h-6 px-1.5 gap-1 text-[10px]',
+    disabled: !activeId,
+    onClick: () => sendCommentToChat(comment),
+    children: [
+      jsx(Codicon, { name: 'comment' }),
+      jsx('span', { children: 'Quote' }),
+    ],
+  })
+  if (!activeId) return jsx('span', { className: wrap, title: 'No active session — open a chat first', children: btn })
+  return jsx(Tip, { label: 'Quote in chat', children: jsx('span', { className: wrap, children: btn }) })
+}
+
 // GitHub-style comment card: tinted header bar (avatar · login · verb · time [+ review badge]), body below.
-function CommentCard({ login, verb, time, reviewState, body, size = 18 }) {
+function CommentCard({ login, verb, time, timestamp, reviewState, body, permalink, size = 18 }) {
   const badge = reviewState ? REVIEW_BADGE[String(reviewState).toUpperCase()] : null
   return jsxs('div', { className: 'rounded-md border border-(--ui-stroke-secondary) overflow-hidden', children: [
     jsxs('div', { className: 'flex items-center gap-1.5 bg-(--ui-bg-quaternary) border-b border-(--ui-stroke-secondary) px-2.5 py-1.5', children: [
@@ -373,6 +420,7 @@ function CommentCard({ login, verb, time, reviewState, body, size = 18 }) {
         jsx('span', { className: 'size-1.5 rounded-full', style: { background: badge.color } }),
         badge.label,
       ] }) : null,
+      jsx(SendToChatButton, { comment: { login, verb, timestamp, body, permalink }, className: badge ? undefined : 'ml-auto' }),
     ] }),
     jsx('div', { className: 'p-2.5', children: jsx(MdBody, { text: body }) }),
   ] })
@@ -627,8 +675,8 @@ function PrDetail({ repo, number, onBack }) {
     queryKey: [ID, 'pr-conv', repo, n],
     enabled: !!repo && !!number && page === 'conversation',
     queryFn: async () => {
-      const comments = await ghApi(repo, `issues/${n}/comments`, '[.[:20][]|{user:.user.login,created_at,body:(.body//""|.[0:700])}]').catch(() => [])
-      const reviews = await ghApi(repo, `pulls/${n}/reviews`, '[.[:15][]|{user:.user.login,state,body:(.body//""|.[0:400]),submitted_at}]').catch(() => [])
+      const comments = await ghApi(repo, `issues/${n}/comments`, '[.[:20][]|{user:.user.login,created_at,html_url,body:(.body//""|.[0:700])}]').catch(() => [])
+      const reviews = await ghApi(repo, `pulls/${n}/reviews`, '[.[:15][]|{user:.user.login,state,html_url,body:(.body//""|.[0:400]),submitted_at}]').catch(() => [])
       return { comments: Array.isArray(comments) ? comments : [], reviews: Array.isArray(reviews) ? reviews : [] }
     },
     staleTime: 15_000,
@@ -717,13 +765,13 @@ function PrDetail({ repo, number, onBack }) {
         children:
           page === 'conversation'
             ? jsxs('div', { className: 'p-3 space-y-3', children: [
-                jsx(CommentCard, { login: d.user, verb: 'described this', body: d.body, size: 20 }),
+                jsx(CommentCard, { login: d.user, verb: 'described this', body: d.body, timestamp: d.created_at, permalink: url, size: 20 }),
                 convQ.isLoading
                   ? jsx('div', { className: 'flex justify-center p-4', children: jsx(GlyphSpinner, {}) })
                   : jsxs(Fragment, { children: [
-                      reviews.map((r, i) => jsx(CommentCard, { login: r.user, verb: 'reviewed', time: ago(r.submitted_at), reviewState: r.state, body: r.body }, `r-${i}`)),
+                      reviews.map((r, i) => jsx(CommentCard, { login: r.user, verb: 'reviewed', time: ago(r.submitted_at), timestamp: r.submitted_at, reviewState: r.state, body: r.body, permalink: r.html_url }, `r-${i}`)),
                       comments.length
-                        ? comments.map((c, i) => jsx(CommentCard, { login: c.user, verb: 'commented', time: ago(c.created_at), body: c.body }, `c-${i}`))
+                        ? comments.map((c, i) => jsx(CommentCard, { login: c.user, verb: 'commented', time: ago(c.created_at), timestamp: c.created_at, body: c.body, permalink: c.html_url }, `c-${i}`))
                         : jsx('div', { className: 'text-[11px] text-(--ui-text-quaternary)', children: 'No comments yet.' }),
                     ] }),
               ] })
@@ -803,11 +851,11 @@ function IssueDetail({ repo, number, onBack }) {
         className: 'p-3 space-y-3',
         children: [
           jsxs('div', { className: 'flex gap-2 items-center', children: [jsx(Avatar, { login: d.author?.login, size: 22 }), jsx(StateDot, { state: d.state }), jsx('h2', { className: 'text-sm font-semibold', children: d.title })] }),
-          jsx(CommentCard, { login: d.author?.login, verb: 'described this', body: d.body, size: 20 }),
+          jsx(CommentCard, { login: d.author?.login, verb: 'described this', body: d.body, timestamp: d.createdAt, permalink: d.url, size: 20 }),
           jsxs('div', { children: [
             jsx('div', { className: 'text-[10px] font-medium text-(--ui-text-secondary) mb-1', children: `Comments (${(d.comments || []).length})` }),
             (d.comments || []).length
-              ? jsx('div', { className: 'space-y-2', children: d.comments.map(c => jsx(CommentCard, { login: c.author?.login, verb: 'commented', time: ago(c.createdAt), body: c.body, size: 16 }, c.id || c.url)) })
+              ? jsx('div', { className: 'space-y-2', children: d.comments.map(c => jsx(CommentCard, { login: c.author?.login, verb: 'commented', time: ago(c.createdAt), timestamp: c.createdAt, body: c.body, permalink: c.url, size: 16 }, c.id || c.url)) })
               : jsx('div', { className: 'text-[10px] text-(--ui-text-quaternary)', children: 'No comments.' }),
           ] }),
         ],
