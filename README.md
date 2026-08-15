@@ -4,6 +4,10 @@ GitHub PRs & Issues as a right workspace pane in [Hermes Desktop](https://hermes
 
 A single-file desktop plugin (`@hermes/plugin-sdk`) that shows your repository's open PRs and issues in a dockable pane, with a full PR detail view: conversation, reviews, commits, checks, and files — styled after GitHub and themed with Hermes' own `--ui-*` variables.
 
+| PR list | PR detail |
+| --- | --- |
+| ![PR list pane](docs/pr-list.png) | ![PR detail view](docs/pr-detail.png) |
+
 ## Features
 
 - **PR list** for the current repo: state pills, diff counts (`+N` green / `−N` red), relative timestamps
