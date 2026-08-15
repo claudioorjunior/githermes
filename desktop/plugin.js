@@ -622,6 +622,7 @@ function PrDetail({ repo, number, onBack }) {
     enabled: !!repo && !!number,
     queryFn: () => ghApi(repo, `pulls/${n}`, '{number,title,state,draft,merged,user:.user.login,created_at,additions,deletions,changed_files,base:.base.ref,head:.head.ref,html_url,body:(.body//""|.[0:1800]),comments}'),
     staleTime: 15_000,
+    refetchInterval: 30_000,
   })
   const convQ = useQuery({
     queryKey: [ID, 'pr-conv', repo, n],
@@ -632,18 +633,21 @@ function PrDetail({ repo, number, onBack }) {
       return { comments: Array.isArray(comments) ? comments : [], reviews: Array.isArray(reviews) ? reviews : [] }
     },
     staleTime: 15_000,
+    refetchInterval: 30_000,
   })
   const filesQ = useQuery({
     queryKey: [ID, 'pr-files', repo, n],
     enabled: !!repo && !!number && page === 'files',
     queryFn: () => ghApi(repo, `pulls/${n}/files`, '[.[:40][]|{filename,status,additions,deletions}]'),
     staleTime: 15_000,
+    refetchInterval: 30_000,
   })
   const commitsQ = useQuery({
     queryKey: [ID, 'pr-commits', repo, n],
     enabled: !!repo && !!number && page === 'commits',
     queryFn: () => ghApi(repo, `pulls/${n}/commits`, '[.[:30][]|{sha:.sha[0:7],msg:(.commit.message|split("\n")[0]),author:(.commit.author.name//.author.login//"—")}]'),
     staleTime: 15_000,
+    refetchInterval: 30_000,
   })
   const checksQ = useQuery({
     queryKey: [ID, 'pr-checks', repo, n],
@@ -653,6 +657,7 @@ function PrDetail({ repo, number, onBack }) {
       return Array.isArray(rows) ? rows : []
     },
     staleTime: 15_000,
+    refetchInterval: 30_000,
   })
 
   const d = headerQ.data
@@ -783,6 +788,7 @@ function IssueDetail({ repo, number, onBack }) {
     enabled: !!repo && !!number,
     queryFn: () => shJson(`${GH} issue view ${sq(String(number))} --repo ${sq(repo)} --json number,title,body,state,author,createdAt,comments,labels,url`),
     staleTime: 15_000,
+    refetchInterval: 30_000,
   })
   const d = q.data
   if (q.isLoading) return jsx('div', { className: 'flex justify-center p-8', children: jsx(GlyphSpinner, {}) })
