@@ -628,8 +628,8 @@ function PrDetail({ repo, number, onBack }) {
     queryKey: [ID, 'pr-conv', repo, n],
     enabled: !!repo && !!number && page === 'conversation',
     queryFn: async () => {
-      const comments = await ghApi(repo, `issues/${n}/comments`, '[.[:20][]|{user:.user.login,created_at,body:(.body//""|.[0:700])}]').catch(() => [])
-      const reviews = await ghApi(repo, `pulls/${n}/reviews`, '[.[:15][]|{user:.user.login,state,body:(.body//""|.[0:400]),submitted_at}]').catch(() => [])
+      const comments = await ghApi(repo, `issues/${n}/comments`, '[.[:20][]|{user:.user.login,created_at,body:(.body//""|.[0:700])}]')
+      const reviews = await ghApi(repo, `pulls/${n}/reviews`, '[.[:15][]|{user:.user.login,state,body:(.body//""|.[0:400]),submitted_at}]')
       return { comments: Array.isArray(comments) ? comments : [], reviews: Array.isArray(reviews) ? reviews : [] }
     },
     staleTime: 15_000,
