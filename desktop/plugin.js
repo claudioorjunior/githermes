@@ -151,6 +151,44 @@ async function ghApi(repo, path, jq) {
   return shJson(`${GH} api ${sq(`repos/${repo}/${path}`)} --jq ${sq(jq)}`)
 }
 
+// shell.exec returns only the LAST 4000 chars of stdout (gateway cap), so big
+// payloads (full comment bodies) can't come back in one call. Route them through
+// a temp file read back in base64 chunks — base64 is pure ASCII, so a chunk
+// boundary can never split a multi-byte char the way raw-byte chunking would.
+// ponytail: N+2 shell.exec round-trips per big read; swap for a single call if
+// the gateway cap is raised or a file-read RPC lands.
+async function shBig(cmd) {
+  const tag = `ghprs.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
+  const raw = `/tmp/${tag}.raw`, b64 = `/tmp/${tag}.b64`
+  try {
+    await sh(`${cmd} > ${sq(raw)} && base64 < ${sq(raw)} > ${sq(b64)}`)
+    let out = ''
+    // EOF = empty read, not short chunk: base64 wraps at 76 chars, so a
+    // chunk boundary can land on a wrapping newline that sh()'s trim removes,
+    // making a full 3800-byte read report 3799 and a length-based EOF exit early.
+    for (let off = 1; ; off += 3800) {
+      const chunk = await sh(`tail -c +${off} ${sq(b64)} | head -c 3800`)
+      if (!chunk) break
+      out += chunk
+    }
+    const bin = atob(out.replace(/\s+/g, ''))
+    return new TextDecoder('utf-8').decode(Uint8Array.from(bin, c => c.charCodeAt(0)))
+  } finally {
+    sh(`unlink ${sq(raw)}; unlink ${sq(b64)}`).catch(() => {})
+  }
+}
+
+async function shJsonBig(cmd) {
+  const out = await shBig(cmd)
+  if (!out) return null
+  try { return JSON.parse(out) } catch { throw new Error('gh JSON parse failed: ' + out.slice(0, 300)) }
+}
+
+async function ghApiBig(repo, path, jq) {
+  if (!repoOk(repo)) throw new Error('invalid repo')
+  return shJsonBig(`${GH} api ${sq(`repos/${repo}/${path}`)} --jq ${sq(jq)}`)
+}
+
 async function shJsonLoose(cmd) {
   const r = await host.request('shell.exec', { command: cmd })
   const out = (r.stdout || '').trim()
@@ -668,7 +706,7 @@ function PrDetail({ repo, number, onBack }) {
   const headerQ = useQuery({
     queryKey: [ID, 'pr-page', repo, n],
     enabled: !!repo && !!number,
-    queryFn: () => ghApi(repo, `pulls/${n}`, '{number,title,state,draft,merged,user:.user.login,created_at,additions,deletions,changed_files,base:.base.ref,head:.head.ref,html_url,body:(.body//""|.[0:1800]),comments}'),
+    queryFn: () => ghApiBig(repo, `pulls/${n}`, '{number,title,state,draft,merged,user:.user.login,created_at,additions,deletions,changed_files,base:.base.ref,head:.head.ref,html_url,body:(.body//""),comments}'),
     staleTime: 15_000,
     refetchInterval: 30_000,
   })
@@ -676,8 +714,8 @@ function PrDetail({ repo, number, onBack }) {
     queryKey: [ID, 'pr-conv', repo, n],
     enabled: !!repo && !!number && page === 'conversation',
     queryFn: async () => {
-      const comments = await ghApi(repo, `issues/${n}/comments`, '[.[:20][]|{user:.user.login,created_at,html_url,body:(.body//""|if length>700 then .[0:700]+"…" else . end)}]')
-      const reviews = await ghApi(repo, `pulls/${n}/reviews`, '[.[:15][]|{user:.user.login,state,html_url,body:(.body//""|if length>400 then .[0:400]+"…" else . end),submitted_at}]')
+      const comments = await ghApiBig(repo, `issues/${n}/comments`, '[.[:20][]|{user:.user.login,created_at,html_url,body:(.body//"")}]')
+      const reviews = await ghApiBig(repo, `pulls/${n}/reviews`, '[.[:15][]|{user:.user.login,state,html_url,body:(.body//""),submitted_at}]')
       return { comments: Array.isArray(comments) ? comments : [], reviews: Array.isArray(reviews) ? reviews : [] }
     },
     staleTime: 15_000,
@@ -834,7 +872,7 @@ function IssueDetail({ repo, number, onBack }) {
   const q = useQuery({
     queryKey: [ID, 'issue-detail', repo, number],
     enabled: !!repo && !!number,
-    queryFn: () => shJson(`${GH} issue view ${sq(String(number))} --repo ${sq(repo)} --json number,title,body,state,author,createdAt,comments,labels,url`),
+    queryFn: () => shJsonBig(`${GH} issue view ${sq(String(number))} --repo ${sq(repo)} --json number,title,body,state,author,createdAt,comments,labels,url`),
     staleTime: 15_000,
     refetchInterval: 30_000,
   })
