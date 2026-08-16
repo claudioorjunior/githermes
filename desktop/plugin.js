@@ -163,11 +163,13 @@ async function shBig(cmd) {
   try {
     await sh(`${cmd} > ${sq(raw)} && base64 < ${sq(raw)} > ${sq(b64)}`)
     let out = ''
+    // EOF = empty read, not short chunk: base64 wraps at 76 chars, so a
+    // chunk boundary can land on a wrapping newline that sh()'s trim removes,
+    // making a full 3800-byte read report 3799 and a length-based EOF exit early.
     for (let off = 1; ; off += 3800) {
       const chunk = await sh(`tail -c +${off} ${sq(b64)} | head -c 3800`)
       if (!chunk) break
       out += chunk
-      if (chunk.length < 3800) break
     }
     const bin = atob(out.replace(/\s+/g, ''))
     return new TextDecoder('utf-8').decode(Uint8Array.from(bin, c => c.charCodeAt(0)))
