@@ -172,6 +172,8 @@ export function prStateKey(d) {
 }
 
 const $repo = atom('')
+// Last session repo auto-applied; lets a manual pick stand until the session repo changes.
+let lastAutoRepo = null
 const $tab = atom('prs')
 const $prState = atom('open')
 const $issueState = atom('open')
@@ -907,8 +909,16 @@ function GitHubPane() {
   const gitQ = useSessionGit(cwd)
 
   useEffect(() => {
-    if (!repo && gitQ.data?.repo) $repo.set(gitQ.data.repo)
-    else if (!repo && reposQ.data?.length) {
+    const sessionRepo = gitQ.data?.repo
+    if (sessionRepo) {
+      // Follow the session's repo; a manual pick stands until it changes again.
+      if (sessionRepo !== lastAutoRepo) {
+        lastAutoRepo = sessionRepo
+        if (sessionRepo !== repo) $repo.set(sessionRepo)
+      }
+    } else if (gitQ.data) {
+      lastAutoRepo = null // cwd resolved with no repo: re-arm auto-follow
+    } else if (!repo && reposQ.data?.length) {
       const saved = pluginCtx?.storage.get('repo')
       $repo.set(saved && reposQ.data.includes(saved) ? saved : reposQ.data[0])
     }
