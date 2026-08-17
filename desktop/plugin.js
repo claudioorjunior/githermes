@@ -243,6 +243,35 @@ export function reviewState(decision) {
   return 'none'
 }
 
+// Issue #9: REST review comments -> threads. Replies carry in_reply_to_id
+// pointing at the thread root; an orphan (root outside the fetched page)
+// anchors its own thread. Cap: first 30 threads, bodies never truncated.
+export function groupInlineThreads(comments) {
+  const list = Array.isArray(comments) ? comments : []
+  const byId = new Set(list.map(c => c.id))
+  const rootId = c => (c.in_reply_to_id && byId.has(c.in_reply_to_id)) ? c.in_reply_to_id : c.id
+  const threads = []
+  const byRoot = new Map()
+  for (const c of list) {
+    if (rootId(c) === c.id) {
+      const t = { root: c, replies: [] }
+      threads.push(t)
+      byRoot.set(c.id, t)
+    }
+  }
+  for (const c of list) {
+    const rid = rootId(c)
+    if (rid !== c.id) byRoot.get(rid)?.replies.push(c)
+  }
+  return threads.slice(0, 30)
+}
+
+// Issue #9: file:line chip; GitHub nulls `line` for outdated comments, fall back to original_line.
+function inlineFileChip(c) {
+  const line = c.line ?? c.original_line
+  return c.path ? (line ? `${c.path}:${line}` : c.path) : ''
+}
+
 const $repo = atom('')
 // Last session repo auto-applied; lets a manual pick stand until the session repo changes.
 let lastAutoRepo = null
@@ -1066,6 +1095,13 @@ function PrDetail({ repo, number, onBack }) {
     queryFn: async () => {
       const comments = await ghApiBig(repo, `issues/${n}/comments`, '[.[:20][]|{user:.user.login,created_at,html_url,body:(.body//"")}]')
       const reviews = await ghApiBig(repo, `pulls/${n}/reviews`, '[.[:15][]|{user:.user.login,state,html_url,body:(.body//""),submitted_at}]')
+      // Issue #9: line-level review comments live on their own endpoint; bodies
+      // and hunks are big, so same shBig routing as the rest of this query.
+      const inline = await ghApiBig(repo, `pulls/${n}/comments?per_page=100`, '[.[]|{id,user:.user.login,body:(.body//""),path,line,original_line,in_reply_to_id,created_at,html_url,diff_hunk:(.diff_hunk//"")}]')
+      return {
+        comments: Array.isArray(comments) ? comments : [],
+        reviews: Array.isArray(reviews) ? reviews : [],
+        threads: groupInlineThreads(inline),
       }
     },
     staleTime: 15_000,
