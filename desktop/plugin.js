@@ -2,7 +2,7 @@
  * github-prs — GitHub PRs & Issues as a right workspace pane.
  * Data via `host.request('shell.exec')` + connected `gh`. No backend.
  * Session PR: cwd git branch (same join as core review) + transcript URL scan.
- * ponytail: list caps at 30 (shell stdout 4000 chars); paginate when truncated.
+ * ponytail: lists cap at 30 rows by design; payloads route through shBig (stdout 4000 cap).
  */
 import {
   host,
@@ -209,6 +209,33 @@ export function prStateKey(d) {
   return s === 'closed' ? 'closed' : 'open'
 }
 
+// Issue #10: statusCheckRollup -> one CI state. Two shapes in the rollup:
+// CheckRun (status QUEUED|IN_PROGRESS|COMPLETED + conclusion) and StatusContext
+// (state SUCCESS|FAILURE|ERROR|PENDING|EXPECTED). Failing wins over pending.
+export function ciState(rollup) {
+  const checks = Array.isArray(rollup) ? rollup : []
+  if (!checks.length) return 'none'
+  let pending = false
+  for (const c of checks) {
+    const raw = c?.__typename === 'StatusContext'
+      ? c.state
+      : String(c?.status || '').toUpperCase() === 'COMPLETED' ? c.conclusion : c.status
+    const s = String(raw || '').toUpperCase()
+    if (s === 'FAILURE' || s === 'ERROR' || s === 'CANCELLED' || s === 'TIMED_OUT' || s === 'ACTION_REQUIRED') return 'failing'
+    if (s === 'QUEUED' || s === 'IN_PROGRESS' || s === 'PENDING' || s === 'EXPECTED') pending = true
+  }
+  return pending ? 'pending' : 'passing'
+}
+
+// Issue #10: gh reviewDecision string -> one review state ('' when no decision).
+export function reviewState(decision) {
+  const d = String(decision || '').toUpperCase()
+  if (d === 'APPROVED') return 'approved'
+  if (d === 'CHANGES_REQUESTED') return 'changes'
+  if (d === 'REVIEW_REQUIRED') return 'required'
+  return 'none'
+}
+
 const $repo = atom('')
 // Last session repo auto-applied; lets a manual pick stand until the session repo changes.
 let lastAutoRepo = null
@@ -288,6 +315,20 @@ function StateDot({ state, isDraft }) {
     : state === 'CLOSED' ? 'var(--ui-red)'
     : 'var(--ui-yellow)'
   return jsx('span', { className: 'inline-block size-2 rounded-full shrink-0', style: { background: color } })
+}
+
+// Issue #10: compact CI + review dots on each PR row (native title = tooltip).
+const CI_DOT = { passing: 'var(--ui-green)', failing: 'var(--ui-red)', pending: 'var(--ui-yellow)', none: 'var(--ui-text-quaternary)' }
+const CI_LABEL = { passing: 'CI passing', failing: 'CI failing', pending: 'CI pending', none: 'No CI configured' }
+const REVIEW_DOT = { approved: 'var(--ui-green)', changes: 'var(--ui-red)', required: 'var(--ui-yellow)', none: 'var(--ui-text-quaternary)' }
+const REVIEW_LABEL = { approved: 'Approved', changes: 'Changes requested', required: 'Review required', none: 'No review decision' }
+function StatusDots({ pr }) {
+  const ci = ciState(pr.statusCheckRollup)
+  const rv = reviewState(pr.reviewDecision)
+  return jsxs('span', { className: 'inline-flex items-center gap-1 shrink-0 self-center', children: [
+    jsx('span', { className: 'size-1.5 rounded-full', style: { background: CI_DOT[ci] }, title: CI_LABEL[ci] }),
+    jsx('span', { className: 'size-1.5 rounded-full', style: { background: REVIEW_DOT[rv] }, title: REVIEW_LABEL[rv] }),
+  ] })
 }
 
 // GitHub-style state pill, themed via skin vars (inline style => reskins live).
@@ -621,7 +662,9 @@ function PrList({ repo, onOpen, highlight }) {
   const q = useQuery({
     queryKey: [ID, 'prs', repo, state],
     enabled: !!repo,
-    queryFn: () => shJson(`${GH} pr list --repo ${sq(repo)} --state ${sq(state)} --limit 30 --json number,title,state,author,updatedAt,url,baseRefName,headRefName,isDraft,additions,deletions,changedFiles`),
+    // Issue #10: +reviewDecision,statusCheckRollup (~580B/row, 30 rows ≈ 17KB)
+    // overflows the 4000-char stdout cap, so the list routes through shBig.
+    queryFn: () => shJsonBig(`${GH} pr list --repo ${sq(repo)} --state ${sq(state)} --limit 30 --json number,title,state,author,updatedAt,url,baseRefName,headRefName,isDraft,additions,deletions,changedFiles,reviewDecision,statusCheckRollup`),
     staleTime: 15_000,
   })
   if (!repo) return jsx(EmptyState, { title: 'Select a repository', description: 'Pick one above to list PRs.' })
@@ -654,6 +697,7 @@ function PrList({ repo, onOpen, highlight }) {
                 ] }),
               ],
             }),
+            jsx(StatusDots, { pr }),
           ],
         }, String(pr.number))
       ),
@@ -666,7 +710,8 @@ function IssueList({ repo, onOpen }) {
   const q = useQuery({
     queryKey: [ID, 'issues', repo, state],
     enabled: !!repo,
-    queryFn: () => shJson(`${GH} issue list --repo ${sq(repo)} --state ${sq(state)} --limit 30 --json number,title,state,author,updatedAt,url,labels`),
+    // Issue #10: same stdout-cap routing as the PR list (busy repos overflow).
+    queryFn: () => shJsonBig(`${GH} issue list --repo ${sq(repo)} --state ${sq(state)} --limit 30 --json number,title,state,author,updatedAt,url,labels`),
     staleTime: 15_000,
   })
   if (!repo) return jsx(EmptyState, { title: 'Select a repository', description: 'Pick one above to list issues.' })
@@ -718,7 +763,7 @@ function PrDetail({ repo, number, onBack }) {
     queryFn: async () => {
       const comments = await ghApiBig(repo, `issues/${n}/comments`, '[.[:20][]|{user:.user.login,created_at,html_url,body:(.body//"")}]')
       const reviews = await ghApiBig(repo, `pulls/${n}/reviews`, '[.[:15][]|{user:.user.login,state,html_url,body:(.body//""),submitted_at}]')
-      return { comments: Array.isArray(comments) ? comments : [], reviews: Array.isArray(reviews) ? reviews : [] }
+      }
     },
     staleTime: 15_000,
     refetchInterval: 30_000,
