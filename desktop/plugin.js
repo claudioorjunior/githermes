@@ -236,6 +236,35 @@ export function reviewState(decision) {
   return 'none'
 }
 
+// Issue #9: REST review comments -> threads. Replies carry in_reply_to_id
+// pointing at the thread root; an orphan (root outside the fetched page)
+// anchors its own thread. Cap: first 30 threads, bodies never truncated.
+export function groupInlineThreads(comments) {
+  const list = Array.isArray(comments) ? comments : []
+  const byId = new Set(list.map(c => c.id))
+  const rootId = c => (c.in_reply_to_id && byId.has(c.in_reply_to_id)) ? c.in_reply_to_id : c.id
+  const threads = []
+  const byRoot = new Map()
+  for (const c of list) {
+    if (rootId(c) === c.id) {
+      const t = { root: c, replies: [] }
+      threads.push(t)
+      byRoot.set(c.id, t)
+    }
+  }
+  for (const c of list) {
+    const rid = rootId(c)
+    if (rid !== c.id) byRoot.get(rid)?.replies.push(c)
+  }
+  return threads.slice(0, 30)
+}
+
+// Issue #9: file:line chip; GitHub nulls `line` for outdated comments, fall back to original_line.
+function inlineFileChip(c) {
+  const line = c.line ?? c.original_line
+  return c.path ? (line ? `${c.path}:${line}` : c.path) : ''
+}
+
 const $repo = atom('')
 // Last session repo auto-applied; lets a manual pick stand until the session repo changes.
 let lastAutoRepo = null
@@ -489,7 +518,8 @@ function SendToChatButton({ comment, className }) {
 }
 
 // GitHub-style comment card: tinted header bar (avatar · login · verb · time [+ review badge]), body below.
-function CommentCard({ login, verb, time, timestamp, reviewState, body, permalink, size = 18 }) {
+// Issue #9: inline review comments add a file:line chip and a collapsed diff-hunk block.
+function CommentCard({ login, verb, time, timestamp, reviewState, body, permalink, size = 18, fileChip, hunk }) {
   const badge = reviewState ? REVIEW_BADGE[String(reviewState).toUpperCase()] : null
   return jsxs('div', { className: 'rounded-md border border-(--ui-stroke-secondary) overflow-hidden', children: [
     jsxs('div', { className: 'flex items-center gap-1.5 bg-(--ui-bg-quaternary) border-b border-(--ui-stroke-secondary) px-2.5 py-1.5', children: [
@@ -497,12 +527,20 @@ function CommentCard({ login, verb, time, timestamp, reviewState, body, permalin
       jsx('span', { className: 'font-semibold text-xs text-(--ui-text-primary) truncate', children: login || '—' }),
       jsx('span', { className: 'text-[11px] text-(--ui-text-tertiary) truncate', children: verb }),
       time ? jsx('span', { className: 'text-[11px] text-(--ui-text-quaternary) shrink-0', children: time }) : null,
+      fileChip ? jsx('span', { className: 'inline-flex max-w-[45%] items-center gap-1 rounded border border-(--ui-stroke-secondary) bg-(--ui-bg-quinary) px-1.5 py-px font-mono text-[10px] text-(--ui-text-secondary)', title: fileChip, children: [
+        jsx(Codicon, { name: 'file' }),
+        jsx('span', { className: 'truncate', children: fileChip }),
+      ] }) : null,
       badge ? jsxs('span', { className: 'ml-auto inline-flex items-center gap-1 shrink-0 text-[10px] font-medium text-(--ui-text-secondary)', children: [
         jsx('span', { className: 'size-1.5 rounded-full', style: { background: badge.color } }),
         badge.label,
       ] }) : null,
       jsx(SendToChatButton, { comment: { login, verb, timestamp, body, permalink }, className: badge ? undefined : 'ml-auto' }),
     ] }),
+    hunk ? jsx('details', { className: 'border-b border-(--ui-stroke-secondary) bg-(--ui-bg-quaternary) px-2.5 py-1', children: [
+      jsx('summary', { className: 'cursor-pointer select-none text-[10px] text-(--ui-text-tertiary)', children: 'Diff context' }),
+      jsx('pre', { className: 'mt-1 overflow-x-auto font-mono text-[10px] leading-4 text-(--ui-text-secondary)', children: hunk }),
+    ] }) : null,
     jsx('div', { className: 'p-2.5', children: jsx(MdBody, { text: body }) }),
   ] })
 }
@@ -763,6 +801,13 @@ function PrDetail({ repo, number, onBack }) {
     queryFn: async () => {
       const comments = await ghApiBig(repo, `issues/${n}/comments`, '[.[:20][]|{user:.user.login,created_at,html_url,body:(.body//"")}]')
       const reviews = await ghApiBig(repo, `pulls/${n}/reviews`, '[.[:15][]|{user:.user.login,state,html_url,body:(.body//""),submitted_at}]')
+      // Issue #9: line-level review comments live on their own endpoint; bodies
+      // and hunks are big, so same shBig routing as the rest of this query.
+      const inline = await ghApiBig(repo, `pulls/${n}/comments?per_page=100`, '[.[]|{id,user:.user.login,body:(.body//""),path,line,original_line,in_reply_to_id,created_at,html_url,diff_hunk:(.diff_hunk//"")}]')
+      return {
+        comments: Array.isArray(comments) ? comments : [],
+        reviews: Array.isArray(reviews) ? reviews : [],
+        threads: groupInlineThreads(inline),
       }
     },
     staleTime: 15_000,
@@ -805,6 +850,16 @@ function PrDetail({ repo, number, onBack }) {
   const checks = Array.isArray(checksQ.data) ? checksQ.data : []
   const comments = convQ.data?.comments || []
   const reviews = convQ.data?.reviews || []
+  const threads = convQ.data?.threads || []
+  // Issue #9: one chronological timeline of reviews, issue comments, and inline threads.
+  const timeline = [
+    ...reviews.map((r, i) => ({ ts: r.submitted_at, el: jsx(CommentCard, { login: r.user, verb: 'reviewed', time: ago(r.submitted_at), timestamp: r.submitted_at, reviewState: r.state, body: r.body, permalink: r.html_url }, `r-${i}`) })),
+    ...comments.map((c, i) => ({ ts: c.created_at, el: jsx(CommentCard, { login: c.user, verb: 'commented', time: ago(c.created_at), timestamp: c.created_at, body: c.body, permalink: c.html_url }, `c-${i}`) })),
+    ...threads.map((t, i) => ({ ts: t.root.created_at, el: jsxs('div', { className: 'space-y-2', children: [
+      jsx(CommentCard, { login: t.root.user, verb: 'commented on the diff', time: ago(t.root.created_at), timestamp: t.root.created_at, body: t.root.body, permalink: t.root.html_url, fileChip: inlineFileChip(t.root), hunk: t.root.diff_hunk || undefined }, `t-${i}-root`),
+      ...t.replies.map((r, j) => jsx('div', { className: 'ml-4', children: jsx(CommentCard, { login: r.user, verb: 'replied', time: ago(r.created_at), timestamp: r.created_at, body: r.body, permalink: r.html_url, fileChip: inlineFileChip(r) }, `t-${i}-${j}`) })),
+    ] }, `t-${i}`) })),
+  ].sort((a, b) => (Date.parse(a.ts || '') || 0) - (Date.parse(b.ts || '') || 0)).map(x => x.el)
 
   return jsxs('div', {
     className: 'flex h-full min-h-0 flex-col',
@@ -858,12 +913,9 @@ function PrDetail({ repo, number, onBack }) {
                 jsx(CommentCard, { login: d.user, verb: 'described this', body: d.body, timestamp: d.created_at, permalink: url, size: 20 }),
                 convQ.isLoading
                   ? jsx('div', { className: 'flex justify-center p-4', children: jsx(GlyphSpinner, {}) })
-                  : jsxs(Fragment, { children: [
-                      reviews.map((r, i) => jsx(CommentCard, { login: r.user, verb: 'reviewed', time: ago(r.submitted_at), timestamp: r.submitted_at, reviewState: r.state, body: r.body, permalink: r.html_url }, `r-${i}`)),
-                      comments.length
-                        ? comments.map((c, i) => jsx(CommentCard, { login: c.user, verb: 'commented', time: ago(c.created_at), timestamp: c.created_at, body: c.body, permalink: c.html_url }, `c-${i}`))
-                        : jsx('div', { className: 'text-[11px] text-(--ui-text-quaternary)', children: 'No comments yet.' }),
-                    ] }),
+                  : timeline.length
+                    ? jsxs(Fragment, { children: timeline })
+                    : jsx('div', { className: 'text-[11px] text-(--ui-text-quaternary)', children: 'No comments yet.' }),
               ] })
             : page === 'commits'
               ? jsx('div', { className: 'p-2', children: commitsQ.isLoading
