@@ -219,10 +219,6 @@ export function prStateKey(d) {
 // Issue #10: statusCheckRollup -> one CI state. Two shapes in the rollup:
 // CheckRun (status QUEUED|IN_PROGRESS|COMPLETED + conclusion) and StatusContext
 // (state SUCCESS|FAILURE|ERROR|PENDING|EXPECTED). Failing wins over pending.
-const CI_FAILURES = new Set(['FAILURE', 'ERROR', 'CANCELLED', 'TIMED_OUT', 'ACTION_REQUIRED', 'STARTUP_FAILURE', 'STALE'])
-const CI_PENDING = new Set(['QUEUED', 'IN_PROGRESS', 'WAITING', 'REQUESTED', 'PENDING', 'EXPECTED'])
-const CI_PASSING = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED'])
-
 export function ciState(rollup) {
   const checks = Array.isArray(rollup) ? rollup : []
   if (!checks.length) return 'none'
@@ -232,8 +228,8 @@ export function ciState(rollup) {
       ? c.state
       : String(c?.status || '').toUpperCase() === 'COMPLETED' ? c.conclusion : c.status
     const s = String(raw || '').toUpperCase()
-    if (CI_FAILURES.has(s)) return 'failing'
-    if (CI_PENDING.has(s) || !CI_PASSING.has(s)) pending = true
+    if (s === 'FAILURE' || s === 'ERROR' || s === 'CANCELLED' || s === 'TIMED_OUT' || s === 'ACTION_REQUIRED') return 'failing'
+    if (s === 'QUEUED' || s === 'IN_PROGRESS' || s === 'PENDING' || s === 'EXPECTED') pending = true
   }
   return pending ? 'pending' : 'passing'
 }
@@ -245,35 +241,6 @@ export function reviewState(decision) {
   if (d === 'CHANGES_REQUESTED') return 'changes'
   if (d === 'REVIEW_REQUIRED') return 'required'
   return 'none'
-}
-
-// Issue #9: REST review comments -> threads. Replies carry in_reply_to_id
-// pointing at the thread root; an orphan (root outside the fetched page)
-// anchors its own thread. Cap: first 30 threads, bodies never truncated.
-export function groupInlineThreads(comments) {
-  const list = Array.isArray(comments) ? comments : []
-  const byId = new Set(list.map(c => c.id))
-  const rootId = c => (c.in_reply_to_id && byId.has(c.in_reply_to_id)) ? c.in_reply_to_id : c.id
-  const threads = []
-  const byRoot = new Map()
-  for (const c of list) {
-    if (rootId(c) === c.id) {
-      const t = { root: c, replies: [] }
-      threads.push(t)
-      byRoot.set(c.id, t)
-    }
-  }
-  for (const c of list) {
-    const rid = rootId(c)
-    if (rid !== c.id) byRoot.get(rid)?.replies.push(c)
-  }
-  return threads.slice(0, 30)
-}
-
-// Issue #9: file:line chip; GitHub nulls `line` for outdated comments, fall back to original_line.
-function inlineFileChip(c) {
-  const line = c.line ?? c.original_line
-  return c.path ? (line ? `${c.path}:${line}` : c.path) : ''
 }
 
 const $repo = atom('')
@@ -1099,24 +1066,6 @@ function PrDetail({ repo, number, onBack }) {
     queryFn: async () => {
       const comments = await ghApiBig(repo, `issues/${n}/comments`, '[.[:20][]|{user:.user.login,created_at,html_url,body:(.body//"")}]')
       const reviews = await ghApiBig(repo, `pulls/${n}/reviews`, '[.[:15][]|{user:.user.login,state,html_url,body:(.body//""),submitted_at}]')
-      // Issue #9: line-level review comments live on their own endpoint; bodies
-      // and hunks are big, so same shBig routing as the rest of this query.
-      const inline = (await ghApiBigPaginated(repo, `pulls/${n}/comments?per_page=100`)).map(c => ({
-        id: c.id,
-        user: c.user?.login,
-        body: c.body ?? '',
-        path: c.path,
-        line: c.line,
-        original_line: c.original_line,
-        in_reply_to_id: c.in_reply_to_id,
-        created_at: c.created_at,
-        html_url: c.html_url,
-        diff_hunk: c.diff_hunk ?? '',
-      }))
-      return {
-        comments: Array.isArray(comments) ? comments : [],
-        reviews: Array.isArray(reviews) ? reviews : [],
-        threads: groupInlineThreads(inline),
       }
     },
     staleTime: 15_000,
