@@ -1,0 +1,145 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import {
+  labelTextColor,
+  parsePatch,
+  prStateKey,
+  ciState,
+  reviewState,
+  groupInlineThreads,
+  parseRemote,
+  extractPrRef,
+  commentToChatText,
+  ago,
+  mdBlocks,
+} from '../desktop/plugin.js'
+
+test('Issue #13: labelTextColor chooses high-contrast text color based on luminance', () => {
+  // Light backgrounds -> black text
+  assert.equal(labelTextColor('#ffffff'), '#000000')
+  assert.equal(labelTextColor('ffffff'), '#000000')
+  assert.equal(labelTextColor('ededed'), '#000000')
+  assert.equal(labelTextColor('#a2eeef'), '#000000')
+  assert.equal(labelTextColor('fff'), '#000000')
+
+  // Dark backgrounds -> white text
+  assert.equal(labelTextColor('#000000'), '#ffffff')
+  assert.equal(labelTextColor('000000'), '#ffffff')
+  assert.equal(labelTextColor('0075ca'), '#ffffff')
+  assert.equal(labelTextColor('#d73a4a'), '#ffffff')
+  assert.equal(labelTextColor('000'), '#ffffff')
+
+  // Invalid hex fallbacks to black
+  assert.equal(labelTextColor(''), '#000000')
+  assert.equal(labelTextColor(null), '#000000')
+  assert.equal(labelTextColor('invalid'), '#000000')
+})
+
+test('Issue #12: parsePatch parses unified diff patch into structured row model', () => {
+  assert.deepEqual(parsePatch(''), [])
+  assert.deepEqual(parsePatch(null), [])
+  assert.deepEqual(parsePatch(undefined), [])
+
+  const samplePatch = [
+    '@@ -10,4 +10,5 @@ function test() {',
+    ' context line',
+    '-deleted line',
+    '+added line 1',
+    '+added line 2',
+    ' final context',
+    '\\ No newline at end of file',
+  ].join('\n')
+
+  const rows = parsePatch(samplePatch)
+  assert.equal(rows.length, 7)
+  assert.deepEqual(rows[0], { type: 'hunk', text: '@@ -10,4 +10,5 @@ function test() {', oldLine: null, newLine: null })
+  assert.deepEqual(rows[1], { type: 'ctx', text: 'context line', oldLine: 10, newLine: 10 })
+  assert.deepEqual(rows[2], { type: 'del', text: 'deleted line', oldLine: 11, newLine: null })
+  assert.deepEqual(rows[3], { type: 'add', text: 'added line 1', oldLine: null, newLine: 11 })
+  assert.deepEqual(rows[4], { type: 'add', text: 'added line 2', oldLine: null, newLine: 12 })
+  assert.deepEqual(rows[5], { type: 'ctx', text: 'final context', oldLine: 12, newLine: 13 })
+  assert.deepEqual(rows[6], { type: 'meta', text: '\\ No newline at end of file', oldLine: null, newLine: null })
+})
+
+test('parseRemote extracts owner/repo from various git remote URL shapes', () => {
+  assert.equal(parseRemote('https://github.com/claudioorjunior/hermes-github-prs.git'), 'claudioorjunior/hermes-github-prs')
+  assert.equal(parseRemote('git@github.com:claudioorjunior/hermes-github-prs.git'), 'claudioorjunior/hermes-github-prs')
+  assert.equal(parseRemote('https://github.com/owner/repo'), 'owner/repo')
+  assert.equal(parseRemote(''), null)
+  assert.equal(parseRemote(null), null)
+})
+
+test('extractPrRef extracts repo and PR number from PR URLs', () => {
+  assert.deepEqual(
+    extractPrRef('https://github.com/owner/repo/pull/42'),
+    { repo: 'owner/repo', number: 42 }
+  )
+  assert.equal(extractPrRef('not a url'), null)
+  assert.equal(extractPrRef(''), null)
+})
+
+test('prStateKey resolves open, draft, merged, closed states', () => {
+  assert.equal(prStateKey({ draft: true }), 'draft')
+  assert.equal(prStateKey({ isDraft: true }), 'draft')
+  assert.equal(prStateKey({ merged: true }), 'merged')
+  assert.equal(prStateKey({ state: 'MERGED' }), 'merged')
+  assert.equal(prStateKey({ state: 'CLOSED' }), 'closed')
+  assert.equal(prStateKey({ state: 'OPEN' }), 'open')
+  assert.equal(prStateKey(null), 'open')
+})
+
+test('ciState resolves failing, pending, passing and none', () => {
+  assert.equal(ciState([]), 'none')
+  assert.equal(ciState([{ status: 'COMPLETED', conclusion: 'SUCCESS' }]), 'passing')
+  assert.equal(ciState([{ status: 'IN_PROGRESS' }]), 'pending')
+  assert.equal(ciState([{ status: 'COMPLETED', conclusion: 'FAILURE' }]), 'failing')
+  assert.equal(ciState([
+    { status: 'COMPLETED', conclusion: 'SUCCESS' },
+    { status: 'COMPLETED', conclusion: 'FAILURE' },
+  ]), 'failing')
+})
+
+test('reviewState resolves review decision strings', () => {
+  assert.equal(reviewState('APPROVED'), 'approved')
+  assert.equal(reviewState('CHANGES_REQUESTED'), 'changes')
+  assert.equal(reviewState('REVIEW_REQUIRED'), 'required')
+  assert.equal(reviewState(''), 'none')
+})
+
+test('groupInlineThreads groups comments into root and replies', () => {
+  const comments = [
+    { id: 1, body: 'root comment' },
+    { id: 2, in_reply_to_id: 1, body: 'reply 1' },
+    { id: 3, in_reply_to_id: 1, body: 'reply 2' },
+    { id: 4, body: 'independent root' },
+  ]
+  const threads = groupInlineThreads(comments)
+  assert.equal(threads.length, 2)
+  assert.equal(threads[0].root.id, 1)
+  assert.equal(threads[0].replies.length, 2)
+  assert.equal(threads[1].root.id, 4)
+  assert.equal(threads[1].replies.length, 0)
+})
+
+test('commentToChatText formats quote blocks for chat composer', () => {
+  const text = commentToChatText({
+    login: 'octocat',
+    verb: 'commented',
+    timestamp: '2026-08-19T00:00:00Z',
+    body: 'Line 1\nLine 2',
+    permalink: 'https://github.com/owner/repo/pull/1#issuecomment-1',
+  })
+  assert.ok(text.includes('> **@octocat** commented · 2026-08-19T00:00:00Z:'))
+  assert.ok(text.includes('> Line 1\n> Line 2'))
+  assert.ok(text.includes('> https://github.com/owner/repo/pull/1#issuecomment-1'))
+})
+
+test('mdBlocks parses GFM markdown into structured AST blocks', () => {
+  const md = '# Title\n\n```js\nconst x = 1\n```\n\n- item 1\n- item 2'
+  const blocks = mdBlocks(md)
+  assert.equal(blocks[0].t, 'h')
+  assert.equal(blocks[0].n, 1)
+  assert.equal(blocks[0].text, 'Title')
+  assert.equal(blocks[1].t, 'pre')
+  assert.equal(blocks[1].text, 'const x = 1')
+})

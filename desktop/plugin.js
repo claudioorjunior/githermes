@@ -475,6 +475,289 @@ function RepoPicker({ repos, value, onChange }) {
   })
 }
 
+export function labelTextColor(hex) {
+  let clean = String(hex || '').replace(/^#/, '')
+  if (clean.length === 3 && /^[0-9a-fA-F]{3}$/.test(clean)) {
+    clean = clean.split('').map(c => c + c).join('')
+  }
+  if (!/^[0-9a-fA-F]{6}$/.test(clean)) return '#000000'
+  const r = parseInt(clean.slice(0, 2), 16)
+  const g = parseInt(clean.slice(2, 4), 16)
+  const b = parseInt(clean.slice(4, 6), 16)
+  // Relative luminance threshold (W3C standard)
+  const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+  return lum > 140 ? '#000000' : '#ffffff'
+}
+
+function LabelChip({ label, className }) {
+  if (!label?.name) return null
+  const bg = label.color ? `#${String(label.color).replace(/^#/, '')}` : 'var(--ui-bg-quaternary)'
+  const color = label.color ? labelTextColor(label.color) : 'var(--ui-text-secondary)'
+  return jsx('span', {
+    className: cn('inline-flex items-center px-1.5 py-px rounded-full text-[10px] font-medium leading-none shrink-0', className),
+    style: { backgroundColor: bg, color, border: '1px solid rgba(0,0,0,0.1)' },
+    children: label.name,
+  })
+}
+
+// Issue #12: parse unified diff patch into structured row model
+export function parsePatch(patch) {
+  if (!patch || typeof patch !== 'string') return []
+  const lines = patch.split('\n')
+  const rows = []
+  let oldLine = 0
+  let newLine = 0
+
+  for (const line of lines) {
+    if (line.startsWith('@@')) {
+      const m = line.match(/^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/)
+      if (m) {
+        oldLine = parseInt(m[1], 10)
+        newLine = parseInt(m[2], 10)
+      }
+      rows.push({ type: 'hunk', text: line, oldLine: null, newLine: null })
+    } else if (line.startsWith('+')) {
+      rows.push({ type: 'add', text: line.slice(1), oldLine: null, newLine: newLine++ })
+    } else if (line.startsWith('-')) {
+      rows.push({ type: 'del', text: line.slice(1), oldLine: oldLine++, newLine: null })
+    } else if (line.startsWith('\\')) {
+      rows.push({ type: 'meta', text: line, oldLine: null, newLine: null })
+    } else {
+      const text = line.startsWith(' ') ? line.slice(1) : line
+      rows.push({ type: 'ctx', text, oldLine: oldLine++, newLine: newLine++ })
+    }
+  }
+  return rows
+}
+
+function FileStatusBadge({ status }) {
+  const s = String(status || '').toLowerCase()
+  const map = {
+    added: { label: 'A', bg: 'var(--ui-green)', title: 'Added' },
+    removed: { label: 'D', bg: 'var(--ui-red)', title: 'Deleted' },
+    modified: { label: 'M', bg: 'var(--ui-yellow)', title: 'Modified' },
+    renamed: { label: 'R', bg: 'var(--ui-purple)', title: 'Renamed' },
+  }
+  const meta = map[s] || { label: '•', bg: 'var(--ui-text-quaternary)', title: s || 'Changed' }
+  return jsx('span', {
+    className: 'inline-flex items-center justify-center w-3.5 h-3.5 rounded text-[9px] font-bold text-white shrink-0',
+    style: { backgroundColor: meta.bg },
+    title: meta.title,
+    children: meta.label,
+  })
+}
+
+function FileDiffBlock({ file }) {
+  const rows = parsePatch(file.patch)
+  const lineCount = rows.length
+  const defaultOpen = Boolean(file.patch && lineCount < 150)
+
+  return jsxs('details', {
+    open: defaultOpen,
+    className: 'group border border-(--ui-stroke-secondary) rounded-md overflow-hidden bg-(--ui-bg-editor) text-xs',
+    children: [
+      jsxs('summary', {
+        className: 'cursor-pointer select-none px-3 py-2 bg-(--ui-bg-quaternary) border-b border-(--ui-stroke-secondary) flex items-center justify-between gap-2 text-xs font-mono hover:bg-(--ui-bg-quinary)',
+        children: [
+          jsxs('div', {
+            className: 'flex items-center gap-1.5 min-w-0 flex-1',
+            children: [
+              jsx(FileStatusBadge, { status: file.status }),
+              jsx('span', { className: 'truncate font-medium text-(--ui-text-primary)', title: file.filename, children: file.filename }),
+            ],
+          }),
+          jsx(DiffCount, { add: file.additions, del: file.deletions, className: 'shrink-0' }),
+        ],
+      }),
+      file.patch && rows.length
+        ? jsx('div', {
+            className: 'overflow-x-auto font-mono text-[11px] leading-5',
+            children: jsx('table', {
+              className: 'w-full border-collapse',
+              children: jsx('tbody', {
+                children: rows.map((r, idx) => {
+                  if (r.type === 'hunk') {
+                    return jsx('tr', {
+                      className: 'bg-(--ui-bg-quaternary) text-(--ui-text-tertiary) text-[10px] italic',
+                      children: jsxs('td', {
+                        colSpan: 4,
+                        className: 'px-3 py-0.5 border-y border-(--ui-stroke-secondary) select-none',
+                        children: r.text,
+                      }),
+                    }, idx)
+                  }
+                  const isAdd = r.type === 'add'
+                  const isDel = r.type === 'del'
+                  const bgStyle = isAdd
+                    ? { backgroundColor: 'rgba(34, 197, 94, 0.10)' }
+                    : isDel
+                    ? { backgroundColor: 'rgba(239, 68, 68, 0.10)' }
+                    : undefined
+                  const textColor = isAdd
+                    ? 'text-(--ui-diff-add-foreground)'
+                    : isDel
+                    ? 'text-(--ui-diff-remove-foreground)'
+                    : 'text-(--ui-text-primary)'
+                  const sign = isAdd ? '+' : isDel ? '−' : ' '
+
+                  return jsxs('tr', {
+                    style: bgStyle,
+                    className: cn('hover:bg-(--ui-bg-quinary)/50', textColor),
+                    children: [
+                      jsx('td', {
+                        className: 'select-none text-right pr-2 text-[10px] text-(--ui-text-quaternary) w-9 border-r border-(--ui-stroke-secondary)/40 opacity-60 font-mono',
+                        children: r.oldLine ?? '',
+                      }),
+                      jsx('td', {
+                        className: 'select-none text-right pr-2 text-[10px] text-(--ui-text-quaternary) w-9 border-r border-(--ui-stroke-secondary)/40 opacity-60 font-mono',
+                        children: r.newLine ?? '',
+                      }),
+                      jsx('td', {
+                        className: 'select-none text-center w-4 text-[10px] opacity-70 font-semibold',
+                        children: sign,
+                      }),
+                      jsx('td', {
+                        className: 'pl-1 pr-3 whitespace-pre text-left font-mono break-all',
+                        children: r.text,
+                      }),
+                    ],
+                  }, idx)
+                }),
+              }),
+            }),
+          })
+        : jsx('div', {
+            className: 'p-3 text-xs text-(--ui-text-tertiary) italic bg-(--ui-bg-editor)',
+            children: file.status === 'renamed'
+              ? 'File renamed without changes'
+              : 'Binary file or no diff content to display',
+          }),
+    ],
+  })
+}
+
+// Issue #2: Merge PR control (method select, delete-branch checkbox, confirm, error handling)
+function MergeControl({ repo, number }) {
+  const [open, setOpen] = useState(false)
+  const [method, setMethod] = useState('squash')
+  const [deleteBranch, setDeleteBranch] = useState(false)
+  const [isMerging, setIsMerging] = useState(false)
+  const [error, setError] = useState(null)
+
+  const handleMerge = async () => {
+    setIsMerging(true)
+    setError(null)
+    try {
+      const flag = method === 'squash' ? '--squash' : method === 'rebase' ? '--rebase' : '--merge'
+      const del = deleteBranch ? ' --delete-branch' : ''
+      // --yes: gh pede confirmação interativa (branch protection, merge queue);
+      // sem TTY no shell.exec isso penduraria ou falharia.
+      await sh(`${GH} pr merge ${sq(String(number))} --repo ${sq(repo)} ${flag}${del} --yes`)
+      queryClient.invalidateQueries({ queryKey: [ID, 'pr-page', repo, String(number)] })
+      queryClient.invalidateQueries({ queryKey: [ID, 'prs', repo] })
+      queryClient.invalidateQueries({ queryKey: [ID, 'session-git'] })
+      setOpen(false)
+    } catch (err) {
+      setError(err?.message || String(err))
+    } finally {
+      setIsMerging(false)
+    }
+  }
+
+  if (!open) {
+    return jsx(Button, {
+      size: 'sm',
+      className: 'h-5 px-2 text-[10px] gap-1 bg-(--ui-purple) text-white hover:opacity-90 ml-auto',
+      onClick: () => { setOpen(true); setError(null) },
+      children: [
+        jsx(Codicon, { name: 'git-merge' }),
+        jsx('span', { children: 'Merge PR' }),
+      ],
+    })
+  }
+
+  const methodLabel = method === 'squash' ? 'Squash & merge' : method === 'rebase' ? 'Rebase & merge' : 'Merge commit'
+
+  return jsxs('div', {
+    className: 'w-full rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-quaternary) p-2.5 space-y-2 mt-2 text-xs',
+    children: [
+      jsxs('div', {
+        className: 'flex items-center justify-between',
+        children: [
+          jsxs('span', { className: 'font-semibold text-(--ui-text-primary) flex items-center gap-1.5', children: [
+            jsx(Codicon, { name: 'git-merge' }),
+            jsx('span', { children: 'Merge pull request' }),
+          ] }),
+          jsx(Button, {
+            size: 'sm',
+            variant: 'ghost',
+            className: 'h-5 w-5 p-0 text-[10px]',
+            disabled: isMerging,
+            onClick: () => { setOpen(false); setError(null) },
+            children: '✕',
+          }),
+        ],
+      }),
+      jsxs('div', {
+        className: 'flex items-center gap-2',
+        children: [
+          jsx('span', { className: 'text-[11px] text-(--ui-text-secondary) shrink-0', children: 'Method:' }),
+          jsxs(Select, {
+            value: method,
+            onValueChange: setMethod,
+            disabled: isMerging,
+            children: [
+              jsx(SelectTrigger, { className: 'h-6 text-xs flex-1', children: jsx(SelectValue, {}) }),
+              jsxs(SelectContent, { children: [
+                jsx(SelectItem, { value: 'squash', children: 'Squash and merge' }),
+                jsx(SelectItem, { value: 'merge', children: 'Create a merge commit' }),
+                jsx(SelectItem, { value: 'rebase', children: 'Rebase and merge' }),
+              ] }),
+            ],
+          }),
+        ],
+      }),
+      jsxs('label', {
+        className: 'flex items-center gap-2 text-[11px] text-(--ui-text-secondary) cursor-pointer select-none',
+        children: [
+          jsx('input', {
+            type: 'checkbox',
+            checked: deleteBranch,
+            onChange: e => setDeleteBranch(e.target.checked),
+            disabled: isMerging,
+            className: 'rounded border-(--ui-stroke-secondary)',
+          }),
+          jsx('span', { children: 'Delete branch after merging' }),
+        ],
+      }),
+      error ? jsx('div', {
+        className: 'p-2 rounded bg-(--ui-bg-quinary) border border-(--ui-red)/30 text-[11px] text-(--ui-red) font-mono break-words whitespace-pre-wrap',
+        children: error,
+      }) : null,
+      jsxs('div', {
+        className: 'flex gap-2 justify-end pt-1',
+        children: [
+          jsx(Button, {
+            size: 'sm',
+            variant: 'ghost',
+            className: 'h-6 text-xs',
+            disabled: isMerging,
+            onClick: () => { setOpen(false); setError(null) },
+            children: 'Cancel',
+          }),
+          jsx(Button, {
+            size: 'sm',
+            className: 'h-6 px-2.5 text-xs bg-(--ui-purple) text-white hover:opacity-90',
+            disabled: isMerging,
+            onClick: handleMerge,
+            children: isMerging ? 'Merging...' : `Confirm ${methodLabel}`,
+          }),
+        ],
+      }),
+    ],
+  })
+}
+
 function Avatar({ login, size = 20 }) {
   const who = String(login || '').replace(/^@/, '')
   if (!who || who === '—') {
@@ -785,6 +1068,9 @@ function IssueList({ repo, onOpen }) {
                 jsxs('span', { className: 'flex gap-1.5 items-baseline flex-wrap', children: [
                   jsx('span', { className: 'font-medium text-xs break-words', children: it.title }),
                   jsx('span', { className: 'text-[10px] text-(--ui-text-quaternary)', children: `#${it.number}` }),
+                  Array.isArray(it.labels) && it.labels.length
+                    ? jsx('span', { className: 'inline-flex flex-wrap gap-1 items-center', children: it.labels.map(l => jsx(LabelChip, { label: l }, l.name || l.id)) })
+                    : null,
                 ] }),
                 jsx('span', { className: 'text-[10px] text-(--ui-text-tertiary)', children: `${it.author?.login || '—'} · ${ago(it.updatedAt)}` }),
               ],
@@ -802,7 +1088,7 @@ function PrDetail({ repo, number, onBack }) {
   const headerQ = useQuery({
     queryKey: [ID, 'pr-page', repo, n],
     enabled: !!repo && !!number,
-    queryFn: () => ghApiBig(repo, `pulls/${n}`, '{number,title,state,draft,merged,user:.user.login,created_at,additions,deletions,changed_files,base:.base.ref,head:.head.ref,html_url,body:(.body//""),comments}'),
+    queryFn: () => ghApiBig(repo, `pulls/${n}`, '{number,title,state,draft,merged,mergeable,mergeable_state,user:.user.login,created_at,additions,deletions,changed_files,base:.base.ref,head:.head.ref,html_url,body:(.body//""),comments}'),
     staleTime: 15_000,
     refetchInterval: 30_000,
   })
@@ -838,7 +1124,7 @@ function PrDetail({ repo, number, onBack }) {
   const filesQ = useQuery({
     queryKey: [ID, 'pr-files', repo, n],
     enabled: !!repo && !!number && page === 'files',
-    queryFn: () => ghApi(repo, `pulls/${n}/files`, '[.[:40][]|{filename,status,additions,deletions}]'),
+    queryFn: () => ghApiBig(repo, `pulls/${n}/files`, '[.[:40][]|{filename,status,additions,deletions,patch:(.patch//"")}]'),
     staleTime: 15_000,
     refetchInterval: 30_000,
   })
@@ -911,6 +1197,7 @@ function PrDetail({ repo, number, onBack }) {
             jsx(Person, { login: d.user, size: 18 }),
             jsx('span', { children: `${ago(d.created_at)} · ${d.head} → ${d.base}` }),
             jsxs('span', { children: [jsx(DiffCount, { add: d.additions, del: d.deletions }), jsx('span', { children: ` · ${d.changed_files ?? 0} files` })] }),
+            prStateKey(d) === 'open' && !d.draft ? jsx(MergeControl, { repo, number: d.number, mergeableState: d.mergeable_state }) : null,
           ] }),
         ],
       }),
@@ -973,16 +1260,11 @@ function PrDetail({ repo, number, onBack }) {
                             }, c.name + c.state)),
                           })
                   })
-                : jsx('div', { className: 'p-2', children: filesQ.isLoading
+                : jsx('div', { className: 'p-2 space-y-2', children: filesQ.isLoading
                     ? jsx('div', { className: 'flex justify-center p-8', children: jsx(GlyphSpinner, {}) })
                     : !files.length
                       ? jsx(EmptyState, { title: 'No files changed' })
-                      : jsx('div', { className: 'divide-y gh-divide rounded-md border border-(--ui-stroke-secondary)', children:
-                          files.map(f => jsxs('div', { className: 'px-3 py-1.5 flex justify-between gap-2 text-[11px]', children: [
-                            jsx('span', { className: 'min-w-0 flex-1 break-all font-mono', children: f.filename }),
-                            jsx(DiffCount, { add: f.additions, del: f.deletions, className: 'shrink-0' }),
-                          ] }, f.filename)),
-                        })
+                      : files.map(f => jsx(FileDiffBlock, { file: f }, f.filename))
                   }),
       }),
     ],
@@ -1015,7 +1297,14 @@ function IssueDetail({ repo, number, onBack }) {
       jsxs('div', {
         className: 'p-3 space-y-3',
         children: [
-          jsxs('div', { className: 'flex gap-2 items-center', children: [jsx(Avatar, { login: d.author?.login, size: 22 }), jsx(StateDot, { state: d.state }), jsx('h2', { className: 'text-sm font-semibold', children: d.title })] }),
+          jsxs('div', { className: 'flex gap-2 items-center flex-wrap', children: [
+            jsx(Avatar, { login: d.author?.login, size: 22 }),
+            jsx(StateDot, { state: d.state }),
+            jsx('h2', { className: 'text-sm font-semibold', children: d.title }),
+            Array.isArray(d.labels) && d.labels.length
+              ? jsx('span', { className: 'inline-flex flex-wrap gap-1 items-center ml-auto', children: d.labels.map(l => jsx(LabelChip, { label: l }, l.name || l.id)) })
+              : null,
+          ] }),
           jsx(CommentCard, { login: d.author?.login, verb: 'described this', body: d.body, timestamp: d.createdAt, permalink: d.url, size: 20 }),
           jsxs('div', { children: [
             jsx('div', { className: 'text-[10px] font-medium text-(--ui-text-secondary) mb-1', children: `Comments (${(d.comments || []).length})` }),
