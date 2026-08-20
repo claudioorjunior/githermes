@@ -343,6 +343,15 @@ async function ghApiBigPaginated(repo, path) {
   return Array.isArray(pages) ? pages.flat() : []
 }
 
+async function ghApiBigPaginatedProjected(repo, path, jq) {
+  const items = await ghApiBigPaginated(repo, path)
+  if (!jq || !items.length) return items
+  const payload = JSON.stringify(items)
+  const out = await shBig(`printf %s ${sq(payload)} | jq -c ${sq(jq)}`)
+  if (!out) return []
+  try { const v = JSON.parse(out); return Array.isArray(v) ? v : [] } catch { return [] }
+}
+
 async function shJsonLoose(cmd) {
   const r = await host.request('shell.exec', { command: cmd })
   const out = (r.stdout || '').trim()
@@ -394,30 +403,36 @@ export function reviewState(decision) {
   return 'none'
 }
 
-const CHECK_RANK = { fail: 0, pending: 1, pass: 2 }
+const CHECK_RANK = { fail: 0, pending: 1, cancel: 1, skipping: 1, pass: 2 }
 
 export function checkTone(bucket) {
   const b = String(bucket || '').toLowerCase()
   if (b === 'pass' || b === 'success') return 'good'
   if (b === 'fail' || b === 'failure') return 'bad'
   if (b === 'pending') return 'warn'
+  if (b === 'cancel' || b === 'cancelled' || b === 'skipping') return 'bad'
   return 'muted'
 }
 
 export function summarizeChecks(checks) {
-  const counts = { fail: 0, pending: 0, pass: 0, other: 0 }
+  const counts = { fail: 0, pending: 0, pass: 0, other: 0, cancel: 0 }
   for (const c of checks || []) {
     const b = String(c?.bucket || '').toLowerCase()
     if (b === 'fail') counts.fail++
     else if (b === 'pending') counts.pending++
     else if (b === 'pass') counts.pass++
+    else if (b === 'cancel' || b === 'skipping' || b === 'cancelled') counts.cancel++
     else counts.other++
   }
   const title = counts.fail
     ? `Blocked by ${counts.fail} failing check${counts.fail === 1 ? '' : 's'}`
     : counts.pending
       ? `Waiting on ${counts.pending} check${counts.pending === 1 ? '' : 's'}`
-      : (counts.pass || counts.other) ? 'All checks passed' : 'No checks'
+      : counts.cancel
+        ? `${counts.cancel} check${counts.cancel === 1 ? '' : 's'} canceled`
+        : counts.other
+          ? `${counts.other} check${counts.other === 1 ? '' : 's'} needs attention`
+          : (counts.pass) ? 'All checks passed' : 'No checks'
   return { ...counts, title }
 }
 
@@ -430,10 +445,13 @@ export function sortChecks(checks) {
 }
 
 export function matchesListQuery(item, query) {
-  const q = String(query || '').trim().toLowerCase()
+  const raw = String(query || '').trim().toLowerCase()
+  if (!raw) return true
+  const q = raw.startsWith('#') ? raw.slice(1).trimStart() : raw
   if (!q) return true
   return [
     item?.number,
+    `#${item?.number}`,
     item?.title,
     item?.author?.login,
     item?.headRefName,
@@ -854,7 +872,11 @@ function CommitsView({ repo, commits, loading, error, onRetry }) {
   if (loading) return jsx(ListSkeleton, {})
   if (error) return jsx(ListErrorState, { title: 'Could not load commits', error, onRetry })
   if (!commits.length) return jsx(EmptyState, { title: 'No commits' })
-  return jsx('div', { className: 'gh-timeline', children: commits.map(c => jsx(CommitRow, { repo, commit: c }, c.full || c.sha)) })
+  const capped = commits.length >= 30
+  return jsxs('div', { className: 'space-y-2', children: [
+    capped ? jsx('div', { className: 'px-0.5 text-[10px] text-(--ui-text-quaternary)', children: 'Showing first 30 commits' }) : null,
+    jsx('div', { className: 'gh-timeline', children: commits.map(c => jsx(CommitRow, { repo, commit: c }, c.full || c.sha)) }),
+  ] })
 }
 
 function CommitRow({ repo, commit }) {
@@ -924,10 +946,12 @@ function ChecksView({ checks, loading, error, onRetry, compact = false }) {
   if (error) return compact ? null : jsx(ListErrorState, { title: 'Could not load checks', error, onRetry })
   if (!checks.length) return compact ? null : jsx(EmptyState, { title: 'No checks', description: 'Nothing reported for this PR.' })
   const summary = summarizeChecks(checks)
-  const tone = summary.fail ? 'bad' : summary.pending ? 'warn' : 'good'
+  const tone = summary.fail ? 'bad' : summary.pending || summary.cancel ? 'warn' : summary.other ? 'warn' : 'good'
   const counts = [
     summary.fail ? `${summary.fail} fail` : null,
     summary.pending ? `${summary.pending} pending` : null,
+    summary.cancel ? `${summary.cancel} canceled` : null,
+    summary.other ? `${summary.other} other` : null,
     summary.pass ? `${summary.pass} pass` : null,
   ].filter(Boolean).join(' · ')
   const head = jsxs('div', { className: 'flex items-center gap-2', children: [
@@ -951,7 +975,7 @@ function ChecksView({ checks, loading, error, onRetry, compact = false }) {
   }, `${c.name}:${c.state}`)) })
   if (compact) {
     return jsxs('details', {
-      open: summary.fail > 0,
+      open: summary.fail > 0 || summary.cancel > 0 || summary.other > 0,
       className: 'rounded-md border border-(--ui-stroke-secondary) px-3 py-2',
       children: [
         jsx('summary', { className: 'cursor-pointer select-none', children: head }),
@@ -972,9 +996,10 @@ function FilesView({ files, loading, error, onRetry }) {
     add += f.additions || 0
     del += f.deletions || 0
   }
+  const shownLabel = `${files.length} file${files.length === 1 ? '' : 's'} shown`
   return jsxs('div', { className: 'space-y-2', children: [
     jsxs('div', { className: 'flex items-center gap-2 px-0.5 text-[11px] text-(--ui-text-tertiary)', children: [
-      jsx('span', { children: `${files.length} file${files.length === 1 ? '' : 's'}` }),
+      jsx('span', { children: shownLabel }),
       jsx(DiffCount, { add, del }),
     ] }),
     jsx('div', { className: 'space-y-1', children: files.map(f => jsx(FileDiffBlock, { file: f }, f.filename)) }),
@@ -1597,7 +1622,7 @@ function PrDetail({ repo, number, onBack }) {
       const reviews = await ghApiBig(repo, `pulls/${n}/reviews`, '[.[:15][]|{user:.user.login,state,html_url,body:(.body//""),submitted_at}]')
       // Issue #9: line-level review comments live on their own endpoint; bodies
       // and hunks are big, so same shBig routing as the rest of this query.
-      const inline = await ghApiBig(repo, `pulls/${n}/comments?per_page=100`, '[.[]|{id,user:.user.login,body:(.body//""),path,line,original_line,in_reply_to_id,created_at,html_url,diff_hunk:(.diff_hunk//"")}]')
+      const inline = await ghApiBigPaginatedProjected(repo, `pulls/${n}/comments?per_page=100`, '[.[]|{id,user:.user.login,body:(.body//""),path,line,original_line,in_reply_to_id,created_at,html_url,diff_hunk:(.diff_hunk//"")}]')
       return {
         comments: Array.isArray(comments) ? comments : [],
         reviews: Array.isArray(reviews) ? reviews : [],
@@ -1610,7 +1635,7 @@ function PrDetail({ repo, number, onBack }) {
   const filesQ = useQuery({
     queryKey: [ID, 'pr-files', repo, n],
     enabled: !!repo && !!number && page === 'files',
-    queryFn: () => ghApiBig(repo, `pulls/${n}/files`, '[.[:40][]|{filename,status,additions,deletions,patch:(.patch//"")}]'),
+    queryFn: () => ghApiBigPaginatedProjected(repo, `pulls/${n}/files?per_page=100`, '[.[]|{filename,status,additions,deletions,patch:(.patch//"")}]'),
     staleTime: 15_000,
     refetchInterval: 30_000,
   })

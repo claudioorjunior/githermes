@@ -114,6 +114,8 @@ test('summarizeChecks titles failing first and sortChecks orders by bucket', () 
   assert.equal(checkTone('fail'), 'bad')
   assert.equal(checkTone('pending'), 'warn')
   assert.equal(checkTone('pass'), 'good')
+  assert.equal(checkTone('cancel'), 'bad')
+  assert.equal(checkTone('skipping'), 'bad')
   assert.deepEqual(summarizeChecks([]).title, 'No checks')
   const rows = [
     { name: 'lint', bucket: 'pass' },
@@ -128,6 +130,8 @@ test('summarizeChecks titles failing first and sortChecks orders by bucket', () 
   assert.deepEqual(sortChecks(rows).map(c => c.name), ['build', 'test', 'lint'])
   assert.equal(summarizeChecks([{ bucket: 'pending' }]).title, 'Waiting on 1 check')
   assert.equal(summarizeChecks([{ bucket: 'pass' }, { bucket: 'pass' }]).title, 'All checks passed')
+  assert.equal(summarizeChecks([{ bucket: 'cancel' }]).title, '1 check canceled')
+  assert.equal(summarizeChecks([{ bucket: 'skipping' }]).title, '1 check canceled')
 })
 
 test('matchesListQuery searches list metadata without case sensitivity', () => {
@@ -140,6 +144,8 @@ test('matchesListQuery searches list metadata without case sensitivity', () => {
   }
   assert.equal(matchesListQuery(item, ''), true)
   assert.equal(matchesListQuery(item, '42'), true)
+  assert.equal(matchesListQuery(item, '#42'), true)
+  assert.equal(matchesListQuery(item, '# 42'), true)
   assert.equal(matchesListQuery(item, 'KEYBOARD'), true)
   assert.equal(matchesListQuery(item, 'octocat'), true)
   assert.equal(matchesListQuery(item, 'accessibility'), true)
