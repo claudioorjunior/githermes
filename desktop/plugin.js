@@ -2,7 +2,7 @@
  * github-prs — GitHub PRs & Issues as a right workspace pane.
  * Data via `host.request('shell.exec')` + connected `gh`. No backend.
  * Session PR: cwd git branch (same join as core review) + transcript URL scan.
- * ponytail: list caps at 30 (shell stdout 4000 chars); paginate when truncated.
+ * ponytail: lists cap at 30 rows by design; payloads route through shBig (stdout 4000 cap).
  */
 import {
   host,
@@ -189,6 +189,13 @@ async function ghApiBig(repo, path, jq) {
   return shJsonBig(`${GH} api ${sq(`repos/${repo}/${path}`)} --jq ${sq(jq)}`)
 }
 
+async function ghApiBigPaginated(repo, path) {
+  if (!repoOk(repo)) throw new Error('invalid repo')
+  // gh cannot combine --slurp with --jq, so flatten the raw page array here.
+  const pages = await shJsonBig(`${GH} api ${sq(`repos/${repo}/${path}`)} --paginate --slurp`)
+  return Array.isArray(pages) ? pages.flat() : []
+}
+
 async function shJsonLoose(cmd) {
   const r = await host.request('shell.exec', { command: cmd })
   const out = (r.stdout || '').trim()
@@ -207,6 +214,66 @@ export function prStateKey(d) {
   const s = String(d.state || '').toLowerCase()
   if (d.merged || s === 'merged') return 'merged'
   return s === 'closed' ? 'closed' : 'open'
+}
+
+// Issue #10: statusCheckRollup -> one CI state. Two shapes in the rollup:
+// CheckRun (status QUEUED|IN_PROGRESS|COMPLETED + conclusion) and StatusContext
+// (state SUCCESS|FAILURE|ERROR|PENDING|EXPECTED). Failing wins over pending.
+const CI_FAILURES = new Set(['FAILURE', 'ERROR', 'CANCELLED', 'TIMED_OUT', 'ACTION_REQUIRED', 'STARTUP_FAILURE', 'STALE'])
+const CI_PENDING = new Set(['QUEUED', 'IN_PROGRESS', 'WAITING', 'REQUESTED', 'PENDING', 'EXPECTED'])
+const CI_PASSING = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED'])
+
+export function ciState(rollup) {
+  const checks = Array.isArray(rollup) ? rollup : []
+  if (!checks.length) return 'none'
+  let pending = false
+  for (const c of checks) {
+    const raw = c?.__typename === 'StatusContext'
+      ? c.state
+      : String(c?.status || '').toUpperCase() === 'COMPLETED' ? c.conclusion : c.status
+    const s = String(raw || '').toUpperCase()
+    if (CI_FAILURES.has(s)) return 'failing'
+    if (CI_PENDING.has(s) || !CI_PASSING.has(s)) pending = true
+  }
+  return pending ? 'pending' : 'passing'
+}
+
+// Issue #10: gh reviewDecision string -> one review state ('' when no decision).
+export function reviewState(decision) {
+  const d = String(decision || '').toUpperCase()
+  if (d === 'APPROVED') return 'approved'
+  if (d === 'CHANGES_REQUESTED') return 'changes'
+  if (d === 'REVIEW_REQUIRED') return 'required'
+  return 'none'
+}
+
+// Issue #9: REST review comments -> threads. Replies carry in_reply_to_id
+// pointing at the thread root; an orphan (root outside the fetched page)
+// anchors its own thread. Cap: first 30 threads, bodies never truncated.
+export function groupInlineThreads(comments) {
+  const list = Array.isArray(comments) ? comments : []
+  const byId = new Set(list.map(c => c.id))
+  const rootId = c => (c.in_reply_to_id && byId.has(c.in_reply_to_id)) ? c.in_reply_to_id : c.id
+  const threads = []
+  const byRoot = new Map()
+  for (const c of list) {
+    if (rootId(c) === c.id) {
+      const t = { root: c, replies: [] }
+      threads.push(t)
+      byRoot.set(c.id, t)
+    }
+  }
+  for (const c of list) {
+    const rid = rootId(c)
+    if (rid !== c.id) byRoot.get(rid)?.replies.push(c)
+  }
+  return threads.slice(0, 30)
+}
+
+// Issue #9: file:line chip; GitHub nulls `line` for outdated comments, fall back to original_line.
+function inlineFileChip(c) {
+  const line = c.line ?? c.original_line
+  return c.path ? (line ? `${c.path}:${line}` : c.path) : ''
 }
 
 const $repo = atom('')
@@ -288,6 +355,20 @@ function StateDot({ state, isDraft }) {
     : state === 'CLOSED' ? 'var(--ui-red)'
     : 'var(--ui-yellow)'
   return jsx('span', { className: 'inline-block size-2 rounded-full shrink-0', style: { background: color } })
+}
+
+// Issue #10: compact CI + review dots on each PR row (native title = tooltip).
+const CI_DOT = { passing: 'var(--ui-green)', failing: 'var(--ui-red)', pending: 'var(--ui-yellow)', none: 'var(--ui-text-quaternary)' }
+const CI_LABEL = { passing: 'CI passing', failing: 'CI failing', pending: 'CI pending', none: 'No CI configured' }
+const REVIEW_DOT = { approved: 'var(--ui-green)', changes: 'var(--ui-red)', required: 'var(--ui-yellow)', none: 'var(--ui-text-quaternary)' }
+const REVIEW_LABEL = { approved: 'Approved', changes: 'Changes requested', required: 'Review required', none: 'No review decision' }
+function StatusDots({ pr }) {
+  const ci = ciState(pr.statusCheckRollup)
+  const rv = reviewState(pr.reviewDecision)
+  return jsxs('span', { className: 'inline-flex items-center gap-1 shrink-0 self-center', children: [
+    jsx('span', { className: 'size-1.5 rounded-full', style: { background: CI_DOT[ci] }, title: CI_LABEL[ci] }),
+    jsx('span', { className: 'size-1.5 rounded-full', style: { background: REVIEW_DOT[rv] }, title: REVIEW_LABEL[rv] }),
+  ] })
 }
 
 // GitHub-style state pill, themed via skin vars (inline style => reskins live).
@@ -394,6 +475,289 @@ function RepoPicker({ repos, value, onChange }) {
   })
 }
 
+export function labelTextColor(hex) {
+  let clean = String(hex || '').replace(/^#/, '')
+  if (clean.length === 3 && /^[0-9a-fA-F]{3}$/.test(clean)) {
+    clean = clean.split('').map(c => c + c).join('')
+  }
+  if (!/^[0-9a-fA-F]{6}$/.test(clean)) return '#000000'
+  const r = parseInt(clean.slice(0, 2), 16)
+  const g = parseInt(clean.slice(2, 4), 16)
+  const b = parseInt(clean.slice(4, 6), 16)
+  // Relative luminance threshold (W3C standard)
+  const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+  return lum > 140 ? '#000000' : '#ffffff'
+}
+
+function LabelChip({ label, className }) {
+  if (!label?.name) return null
+  const bg = label.color ? `#${String(label.color).replace(/^#/, '')}` : 'var(--ui-bg-quaternary)'
+  const color = label.color ? labelTextColor(label.color) : 'var(--ui-text-secondary)'
+  return jsx('span', {
+    className: cn('inline-flex items-center px-1.5 py-px rounded-full text-[10px] font-medium leading-none shrink-0', className),
+    style: { backgroundColor: bg, color, border: '1px solid rgba(0,0,0,0.1)' },
+    children: label.name,
+  })
+}
+
+// Issue #12: parse unified diff patch into structured row model
+export function parsePatch(patch) {
+  if (!patch || typeof patch !== 'string') return []
+  const lines = patch.split('\n')
+  const rows = []
+  let oldLine = 0
+  let newLine = 0
+
+  for (const line of lines) {
+    if (line.startsWith('@@')) {
+      const m = line.match(/^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/)
+      if (m) {
+        oldLine = parseInt(m[1], 10)
+        newLine = parseInt(m[2], 10)
+      }
+      rows.push({ type: 'hunk', text: line, oldLine: null, newLine: null })
+    } else if (line.startsWith('+')) {
+      rows.push({ type: 'add', text: line.slice(1), oldLine: null, newLine: newLine++ })
+    } else if (line.startsWith('-')) {
+      rows.push({ type: 'del', text: line.slice(1), oldLine: oldLine++, newLine: null })
+    } else if (line.startsWith('\\')) {
+      rows.push({ type: 'meta', text: line, oldLine: null, newLine: null })
+    } else {
+      const text = line.startsWith(' ') ? line.slice(1) : line
+      rows.push({ type: 'ctx', text, oldLine: oldLine++, newLine: newLine++ })
+    }
+  }
+  return rows
+}
+
+function FileStatusBadge({ status }) {
+  const s = String(status || '').toLowerCase()
+  const map = {
+    added: { label: 'A', bg: 'var(--ui-green)', title: 'Added' },
+    removed: { label: 'D', bg: 'var(--ui-red)', title: 'Deleted' },
+    modified: { label: 'M', bg: 'var(--ui-yellow)', title: 'Modified' },
+    renamed: { label: 'R', bg: 'var(--ui-purple)', title: 'Renamed' },
+  }
+  const meta = map[s] || { label: '•', bg: 'var(--ui-text-quaternary)', title: s || 'Changed' }
+  return jsx('span', {
+    className: 'inline-flex items-center justify-center w-3.5 h-3.5 rounded text-[9px] font-bold text-white shrink-0',
+    style: { backgroundColor: meta.bg },
+    title: meta.title,
+    children: meta.label,
+  })
+}
+
+function FileDiffBlock({ file }) {
+  const rows = parsePatch(file.patch)
+  const lineCount = rows.length
+  const defaultOpen = Boolean(file.patch && lineCount < 150)
+
+  return jsxs('details', {
+    open: defaultOpen,
+    className: 'group border border-(--ui-stroke-secondary) rounded-md overflow-hidden bg-(--ui-bg-editor) text-xs',
+    children: [
+      jsxs('summary', {
+        className: 'cursor-pointer select-none px-3 py-2 bg-(--ui-bg-quaternary) border-b border-(--ui-stroke-secondary) flex items-center justify-between gap-2 text-xs font-mono hover:bg-(--ui-bg-quinary)',
+        children: [
+          jsxs('div', {
+            className: 'flex items-center gap-1.5 min-w-0 flex-1',
+            children: [
+              jsx(FileStatusBadge, { status: file.status }),
+              jsx('span', { className: 'truncate font-medium text-(--ui-text-primary)', title: file.filename, children: file.filename }),
+            ],
+          }),
+          jsx(DiffCount, { add: file.additions, del: file.deletions, className: 'shrink-0' }),
+        ],
+      }),
+      file.patch && rows.length
+        ? jsx('div', {
+            className: 'overflow-x-auto font-mono text-[11px] leading-5',
+            children: jsx('table', {
+              className: 'w-full border-collapse',
+              children: jsx('tbody', {
+                children: rows.map((r, idx) => {
+                  if (r.type === 'hunk') {
+                    return jsx('tr', {
+                      className: 'bg-(--ui-bg-quaternary) text-(--ui-text-tertiary) text-[10px] italic',
+                      children: jsxs('td', {
+                        colSpan: 4,
+                        className: 'px-3 py-0.5 border-y border-(--ui-stroke-secondary) select-none',
+                        children: r.text,
+                      }),
+                    }, idx)
+                  }
+                  const isAdd = r.type === 'add'
+                  const isDel = r.type === 'del'
+                  const bgStyle = isAdd
+                    ? { backgroundColor: 'rgba(34, 197, 94, 0.10)' }
+                    : isDel
+                    ? { backgroundColor: 'rgba(239, 68, 68, 0.10)' }
+                    : undefined
+                  const textColor = isAdd
+                    ? 'text-(--ui-diff-add-foreground)'
+                    : isDel
+                    ? 'text-(--ui-diff-remove-foreground)'
+                    : 'text-(--ui-text-primary)'
+                  const sign = isAdd ? '+' : isDel ? '−' : ' '
+
+                  return jsxs('tr', {
+                    style: bgStyle,
+                    className: cn('hover:bg-(--ui-bg-quinary)/50', textColor),
+                    children: [
+                      jsx('td', {
+                        className: 'select-none text-right pr-2 text-[10px] text-(--ui-text-quaternary) w-9 border-r border-(--ui-stroke-secondary)/40 opacity-60 font-mono',
+                        children: r.oldLine ?? '',
+                      }),
+                      jsx('td', {
+                        className: 'select-none text-right pr-2 text-[10px] text-(--ui-text-quaternary) w-9 border-r border-(--ui-stroke-secondary)/40 opacity-60 font-mono',
+                        children: r.newLine ?? '',
+                      }),
+                      jsx('td', {
+                        className: 'select-none text-center w-4 text-[10px] opacity-70 font-semibold',
+                        children: sign,
+                      }),
+                      jsx('td', {
+                        className: 'pl-1 pr-3 whitespace-pre text-left font-mono break-all',
+                        children: r.text,
+                      }),
+                    ],
+                  }, idx)
+                }),
+              }),
+            }),
+          })
+        : jsx('div', {
+            className: 'p-3 text-xs text-(--ui-text-tertiary) italic bg-(--ui-bg-editor)',
+            children: file.status === 'renamed'
+              ? 'File renamed without changes'
+              : 'Binary file or no diff content to display',
+          }),
+    ],
+  })
+}
+
+// Issue #2: Merge PR control (method select, delete-branch checkbox, confirm, error handling)
+function MergeControl({ repo, number }) {
+  const [open, setOpen] = useState(false)
+  const [method, setMethod] = useState('squash')
+  const [deleteBranch, setDeleteBranch] = useState(false)
+  const [isMerging, setIsMerging] = useState(false)
+  const [error, setError] = useState(null)
+
+  const handleMerge = async () => {
+    setIsMerging(true)
+    setError(null)
+    try {
+      const flag = method === 'squash' ? '--squash' : method === 'rebase' ? '--rebase' : '--merge'
+      const del = deleteBranch ? ' --delete-branch' : ''
+      // --yes: gh pede confirmação interativa (branch protection, merge queue);
+      // sem TTY no shell.exec isso penduraria ou falharia.
+      await sh(`${GH} pr merge ${sq(String(number))} --repo ${sq(repo)} ${flag}${del} --yes`)
+      queryClient.invalidateQueries({ queryKey: [ID, 'pr-page', repo, String(number)] })
+      queryClient.invalidateQueries({ queryKey: [ID, 'prs', repo] })
+      queryClient.invalidateQueries({ queryKey: [ID, 'session-git'] })
+      setOpen(false)
+    } catch (err) {
+      setError(err?.message || String(err))
+    } finally {
+      setIsMerging(false)
+    }
+  }
+
+  if (!open) {
+    return jsx(Button, {
+      size: 'sm',
+      className: 'h-5 px-2 text-[10px] gap-1 bg-(--ui-purple) text-white hover:opacity-90 ml-auto',
+      onClick: () => { setOpen(true); setError(null) },
+      children: [
+        jsx(Codicon, { name: 'git-merge' }),
+        jsx('span', { children: 'Merge PR' }),
+      ],
+    })
+  }
+
+  const methodLabel = method === 'squash' ? 'Squash & merge' : method === 'rebase' ? 'Rebase & merge' : 'Merge commit'
+
+  return jsxs('div', {
+    className: 'w-full rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-quaternary) p-2.5 space-y-2 mt-2 text-xs',
+    children: [
+      jsxs('div', {
+        className: 'flex items-center justify-between',
+        children: [
+          jsxs('span', { className: 'font-semibold text-(--ui-text-primary) flex items-center gap-1.5', children: [
+            jsx(Codicon, { name: 'git-merge' }),
+            jsx('span', { children: 'Merge pull request' }),
+          ] }),
+          jsx(Button, {
+            size: 'sm',
+            variant: 'ghost',
+            className: 'h-5 w-5 p-0 text-[10px]',
+            disabled: isMerging,
+            onClick: () => { setOpen(false); setError(null) },
+            children: '✕',
+          }),
+        ],
+      }),
+      jsxs('div', {
+        className: 'flex items-center gap-2',
+        children: [
+          jsx('span', { className: 'text-[11px] text-(--ui-text-secondary) shrink-0', children: 'Method:' }),
+          jsxs(Select, {
+            value: method,
+            onValueChange: setMethod,
+            disabled: isMerging,
+            children: [
+              jsx(SelectTrigger, { className: 'h-6 text-xs flex-1', children: jsx(SelectValue, {}) }),
+              jsxs(SelectContent, { children: [
+                jsx(SelectItem, { value: 'squash', children: 'Squash and merge' }),
+                jsx(SelectItem, { value: 'merge', children: 'Create a merge commit' }),
+                jsx(SelectItem, { value: 'rebase', children: 'Rebase and merge' }),
+              ] }),
+            ],
+          }),
+        ],
+      }),
+      jsxs('label', {
+        className: 'flex items-center gap-2 text-[11px] text-(--ui-text-secondary) cursor-pointer select-none',
+        children: [
+          jsx('input', {
+            type: 'checkbox',
+            checked: deleteBranch,
+            onChange: e => setDeleteBranch(e.target.checked),
+            disabled: isMerging,
+            className: 'rounded border-(--ui-stroke-secondary)',
+          }),
+          jsx('span', { children: 'Delete branch after merging' }),
+        ],
+      }),
+      error ? jsx('div', {
+        className: 'p-2 rounded bg-(--ui-bg-quinary) border border-(--ui-red)/30 text-[11px] text-(--ui-red) font-mono break-words whitespace-pre-wrap',
+        children: error,
+      }) : null,
+      jsxs('div', {
+        className: 'flex gap-2 justify-end pt-1',
+        children: [
+          jsx(Button, {
+            size: 'sm',
+            variant: 'ghost',
+            className: 'h-6 text-xs',
+            disabled: isMerging,
+            onClick: () => { setOpen(false); setError(null) },
+            children: 'Cancel',
+          }),
+          jsx(Button, {
+            size: 'sm',
+            className: 'h-6 px-2.5 text-xs bg-(--ui-purple) text-white hover:opacity-90',
+            disabled: isMerging,
+            onClick: handleMerge,
+            children: isMerging ? 'Merging...' : `Confirm ${methodLabel}`,
+          }),
+        ],
+      }),
+    ],
+  })
+}
+
 function Avatar({ login, size = 20 }) {
   const who = String(login || '').replace(/^@/, '')
   if (!who || who === '—') {
@@ -448,7 +812,8 @@ function SendToChatButton({ comment, className }) {
 }
 
 // GitHub-style comment card: tinted header bar (avatar · login · verb · time [+ review badge]), body below.
-function CommentCard({ login, verb, time, timestamp, reviewState, body, permalink, size = 18 }) {
+// Issue #9: inline review comments add a file:line chip and a collapsed diff-hunk block.
+function CommentCard({ login, verb, time, timestamp, reviewState, body, permalink, size = 18, fileChip, hunk }) {
   const badge = reviewState ? REVIEW_BADGE[String(reviewState).toUpperCase()] : null
   return jsxs('div', { className: 'rounded-md border border-(--ui-stroke-secondary) overflow-hidden', children: [
     jsxs('div', { className: 'flex items-center gap-1.5 bg-(--ui-bg-quaternary) border-b border-(--ui-stroke-secondary) px-2.5 py-1.5', children: [
@@ -456,12 +821,20 @@ function CommentCard({ login, verb, time, timestamp, reviewState, body, permalin
       jsx('span', { className: 'font-semibold text-xs text-(--ui-text-primary) truncate', children: login || '—' }),
       jsx('span', { className: 'text-[11px] text-(--ui-text-tertiary) truncate', children: verb }),
       time ? jsx('span', { className: 'text-[11px] text-(--ui-text-quaternary) shrink-0', children: time }) : null,
+      fileChip ? jsx('span', { className: 'inline-flex max-w-[45%] items-center gap-1 rounded border border-(--ui-stroke-secondary) bg-(--ui-bg-quinary) px-1.5 py-px font-mono text-[10px] text-(--ui-text-secondary)', title: fileChip, children: [
+        jsx(Codicon, { name: 'file' }),
+        jsx('span', { className: 'truncate', children: fileChip }),
+      ] }) : null,
       badge ? jsxs('span', { className: 'ml-auto inline-flex items-center gap-1 shrink-0 text-[10px] font-medium text-(--ui-text-secondary)', children: [
         jsx('span', { className: 'size-1.5 rounded-full', style: { background: badge.color } }),
         badge.label,
       ] }) : null,
       jsx(SendToChatButton, { comment: { login, verb, timestamp, body, permalink }, className: badge ? undefined : 'ml-auto' }),
     ] }),
+    hunk ? jsx('details', { className: 'border-b border-(--ui-stroke-secondary) bg-(--ui-bg-quaternary) px-2.5 py-1', children: [
+      jsx('summary', { className: 'cursor-pointer select-none text-[10px] text-(--ui-text-tertiary)', children: 'Diff context' }),
+      jsx('pre', { className: 'mt-1 overflow-x-auto font-mono text-[10px] leading-4 text-(--ui-text-secondary)', children: hunk }),
+    ] }) : null,
     jsx('div', { className: 'p-2.5', children: jsx(MdBody, { text: body }) }),
   ] })
 }
@@ -621,7 +994,9 @@ function PrList({ repo, onOpen, highlight }) {
   const q = useQuery({
     queryKey: [ID, 'prs', repo, state],
     enabled: !!repo,
-    queryFn: () => shJson(`${GH} pr list --repo ${sq(repo)} --state ${sq(state)} --limit 30 --json number,title,state,author,updatedAt,url,baseRefName,headRefName,isDraft,additions,deletions,changedFiles`),
+    // Issue #10: +reviewDecision,statusCheckRollup (~580B/row, 30 rows ≈ 17KB)
+    // overflows the 4000-char stdout cap, so the list routes through shBig.
+    queryFn: () => shJsonBig(`${GH} pr list --repo ${sq(repo)} --state ${sq(state)} --limit 30 --json number,title,state,author,updatedAt,url,baseRefName,headRefName,isDraft,additions,deletions,changedFiles,reviewDecision,statusCheckRollup`),
     staleTime: 15_000,
   })
   if (!repo) return jsx(EmptyState, { title: 'Select a repository', description: 'Pick one above to list PRs.' })
@@ -654,6 +1029,7 @@ function PrList({ repo, onOpen, highlight }) {
                 ] }),
               ],
             }),
+            jsx(StatusDots, { pr }),
           ],
         }, String(pr.number))
       ),
@@ -666,7 +1042,8 @@ function IssueList({ repo, onOpen }) {
   const q = useQuery({
     queryKey: [ID, 'issues', repo, state],
     enabled: !!repo,
-    queryFn: () => shJson(`${GH} issue list --repo ${sq(repo)} --state ${sq(state)} --limit 30 --json number,title,state,author,updatedAt,url,labels`),
+    // Issue #10: same stdout-cap routing as the PR list (busy repos overflow).
+    queryFn: () => shJsonBig(`${GH} issue list --repo ${sq(repo)} --state ${sq(state)} --limit 30 --json number,title,state,author,updatedAt,url,labels`),
     staleTime: 15_000,
   })
   if (!repo) return jsx(EmptyState, { title: 'Select a repository', description: 'Pick one above to list issues.' })
@@ -691,6 +1068,9 @@ function IssueList({ repo, onOpen }) {
                 jsxs('span', { className: 'flex gap-1.5 items-baseline flex-wrap', children: [
                   jsx('span', { className: 'font-medium text-xs break-words', children: it.title }),
                   jsx('span', { className: 'text-[10px] text-(--ui-text-quaternary)', children: `#${it.number}` }),
+                  Array.isArray(it.labels) && it.labels.length
+                    ? jsx('span', { className: 'inline-flex flex-wrap gap-1 items-center', children: it.labels.map(l => jsx(LabelChip, { label: l }, l.name || l.id)) })
+                    : null,
                 ] }),
                 jsx('span', { className: 'text-[10px] text-(--ui-text-tertiary)', children: `${it.author?.login || '—'} · ${ago(it.updatedAt)}` }),
               ],
@@ -708,7 +1088,7 @@ function PrDetail({ repo, number, onBack }) {
   const headerQ = useQuery({
     queryKey: [ID, 'pr-page', repo, n],
     enabled: !!repo && !!number,
-    queryFn: () => ghApiBig(repo, `pulls/${n}`, '{number,title,state,draft,merged,user:.user.login,created_at,additions,deletions,changed_files,base:.base.ref,head:.head.ref,html_url,body:(.body//""),comments}'),
+    queryFn: () => ghApiBig(repo, `pulls/${n}`, '{number,title,state,draft,merged,mergeable,mergeable_state,user:.user.login,created_at,additions,deletions,changed_files,base:.base.ref,head:.head.ref,html_url,body:(.body//""),comments}'),
     staleTime: 15_000,
     refetchInterval: 30_000,
   })
@@ -718,7 +1098,25 @@ function PrDetail({ repo, number, onBack }) {
     queryFn: async () => {
       const comments = await ghApiBig(repo, `issues/${n}/comments`, '[.[:20][]|{user:.user.login,created_at,html_url,body:(.body//"")}]')
       const reviews = await ghApiBig(repo, `pulls/${n}/reviews`, '[.[:15][]|{user:.user.login,state,html_url,body:(.body//""),submitted_at}]')
-      return { comments: Array.isArray(comments) ? comments : [], reviews: Array.isArray(reviews) ? reviews : [] }
+      // Issue #9: line-level review comments live on their own endpoint; bodies
+      // and hunks are big, so same shBig routing as the rest of this query.
+      const inline = (await ghApiBigPaginated(repo, `pulls/${n}/comments?per_page=100`)).map(c => ({
+        id: c.id,
+        user: c.user?.login,
+        body: c.body ?? '',
+        path: c.path,
+        line: c.line,
+        original_line: c.original_line,
+        in_reply_to_id: c.in_reply_to_id,
+        created_at: c.created_at,
+        html_url: c.html_url,
+        diff_hunk: c.diff_hunk ?? '',
+      }))
+      return {
+        comments: Array.isArray(comments) ? comments : [],
+        reviews: Array.isArray(reviews) ? reviews : [],
+        threads: groupInlineThreads(inline),
+      }
     },
     staleTime: 15_000,
     refetchInterval: 30_000,
@@ -726,7 +1124,7 @@ function PrDetail({ repo, number, onBack }) {
   const filesQ = useQuery({
     queryKey: [ID, 'pr-files', repo, n],
     enabled: !!repo && !!number && page === 'files',
-    queryFn: () => ghApi(repo, `pulls/${n}/files`, '[.[:40][]|{filename,status,additions,deletions}]'),
+    queryFn: () => ghApiBig(repo, `pulls/${n}/files`, '[.[:40][]|{filename,status,additions,deletions,patch:(.patch//"")}]'),
     staleTime: 15_000,
     refetchInterval: 30_000,
   })
@@ -760,6 +1158,16 @@ function PrDetail({ repo, number, onBack }) {
   const checks = Array.isArray(checksQ.data) ? checksQ.data : []
   const comments = convQ.data?.comments || []
   const reviews = convQ.data?.reviews || []
+  const threads = convQ.data?.threads || []
+  // Issue #9: one chronological timeline of reviews, issue comments, and inline threads.
+  const timeline = [
+    ...reviews.map((r, i) => ({ ts: r.submitted_at, el: jsx(CommentCard, { login: r.user, verb: 'reviewed', time: ago(r.submitted_at), timestamp: r.submitted_at, reviewState: r.state, body: r.body, permalink: r.html_url }, `r-${i}`) })),
+    ...comments.map((c, i) => ({ ts: c.created_at, el: jsx(CommentCard, { login: c.user, verb: 'commented', time: ago(c.created_at), timestamp: c.created_at, body: c.body, permalink: c.html_url }, `c-${i}`) })),
+    ...threads.map((t, i) => ({ ts: t.root.created_at, el: jsxs('div', { className: 'space-y-2', children: [
+      jsx(CommentCard, { login: t.root.user, verb: 'commented on the diff', time: ago(t.root.created_at), timestamp: t.root.created_at, body: t.root.body, permalink: t.root.html_url, fileChip: inlineFileChip(t.root), hunk: t.root.diff_hunk || undefined }, `t-${i}-root`),
+      ...t.replies.map((r, j) => jsx('div', { className: 'ml-4', children: jsx(CommentCard, { login: r.user, verb: 'replied', time: ago(r.created_at), timestamp: r.created_at, body: r.body, permalink: r.html_url, fileChip: inlineFileChip(r) }, `t-${i}-${j}`) })),
+    ] }, `t-${i}`) })),
+  ].sort((a, b) => (Date.parse(a.ts || '') || 0) - (Date.parse(b.ts || '') || 0)).map(x => x.el)
 
   return jsxs('div', {
     className: 'flex h-full min-h-0 flex-col',
@@ -789,6 +1197,7 @@ function PrDetail({ repo, number, onBack }) {
             jsx(Person, { login: d.user, size: 18 }),
             jsx('span', { children: `${ago(d.created_at)} · ${d.head} → ${d.base}` }),
             jsxs('span', { children: [jsx(DiffCount, { add: d.additions, del: d.deletions }), jsx('span', { children: ` · ${d.changed_files ?? 0} files` })] }),
+            prStateKey(d) === 'open' && !d.draft ? jsx(MergeControl, { repo, number: d.number, mergeableState: d.mergeable_state }) : null,
           ] }),
         ],
       }),
@@ -813,12 +1222,9 @@ function PrDetail({ repo, number, onBack }) {
                 jsx(CommentCard, { login: d.user, verb: 'described this', body: d.body, timestamp: d.created_at, permalink: url, size: 20 }),
                 convQ.isLoading
                   ? jsx('div', { className: 'flex justify-center p-4', children: jsx(GlyphSpinner, {}) })
-                  : jsxs(Fragment, { children: [
-                      reviews.map((r, i) => jsx(CommentCard, { login: r.user, verb: 'reviewed', time: ago(r.submitted_at), timestamp: r.submitted_at, reviewState: r.state, body: r.body, permalink: r.html_url }, `r-${i}`)),
-                      comments.length
-                        ? comments.map((c, i) => jsx(CommentCard, { login: c.user, verb: 'commented', time: ago(c.created_at), timestamp: c.created_at, body: c.body, permalink: c.html_url }, `c-${i}`))
-                        : jsx('div', { className: 'text-[11px] text-(--ui-text-quaternary)', children: 'No comments yet.' }),
-                    ] }),
+                  : timeline.length
+                    ? jsxs(Fragment, { children: timeline })
+                    : jsx('div', { className: 'text-[11px] text-(--ui-text-quaternary)', children: 'No comments yet.' }),
               ] })
             : page === 'commits'
               ? jsx('div', { className: 'p-2', children: commitsQ.isLoading
@@ -854,16 +1260,11 @@ function PrDetail({ repo, number, onBack }) {
                             }, c.name + c.state)),
                           })
                   })
-                : jsx('div', { className: 'p-2', children: filesQ.isLoading
+                : jsx('div', { className: 'p-2 space-y-2', children: filesQ.isLoading
                     ? jsx('div', { className: 'flex justify-center p-8', children: jsx(GlyphSpinner, {}) })
                     : !files.length
                       ? jsx(EmptyState, { title: 'No files changed' })
-                      : jsx('div', { className: 'divide-y gh-divide rounded-md border border-(--ui-stroke-secondary)', children:
-                          files.map(f => jsxs('div', { className: 'px-3 py-1.5 flex justify-between gap-2 text-[11px]', children: [
-                            jsx('span', { className: 'min-w-0 flex-1 break-all font-mono', children: f.filename }),
-                            jsx(DiffCount, { add: f.additions, del: f.deletions, className: 'shrink-0' }),
-                          ] }, f.filename)),
-                        })
+                      : files.map(f => jsx(FileDiffBlock, { file: f }, f.filename))
                   }),
       }),
     ],
@@ -896,7 +1297,14 @@ function IssueDetail({ repo, number, onBack }) {
       jsxs('div', {
         className: 'p-3 space-y-3',
         children: [
-          jsxs('div', { className: 'flex gap-2 items-center', children: [jsx(Avatar, { login: d.author?.login, size: 22 }), jsx(StateDot, { state: d.state }), jsx('h2', { className: 'text-sm font-semibold', children: d.title })] }),
+          jsxs('div', { className: 'flex gap-2 items-center flex-wrap', children: [
+            jsx(Avatar, { login: d.author?.login, size: 22 }),
+            jsx(StateDot, { state: d.state }),
+            jsx('h2', { className: 'text-sm font-semibold', children: d.title }),
+            Array.isArray(d.labels) && d.labels.length
+              ? jsx('span', { className: 'inline-flex flex-wrap gap-1 items-center ml-auto', children: d.labels.map(l => jsx(LabelChip, { label: l }, l.name || l.id)) })
+              : null,
+          ] }),
           jsx(CommentCard, { login: d.author?.login, verb: 'described this', body: d.body, timestamp: d.createdAt, permalink: d.url, size: 20 }),
           jsxs('div', { children: [
             jsx('div', { className: 'text-[10px] font-medium text-(--ui-text-secondary) mb-1', children: `Comments (${(d.comments || []).length})` }),
