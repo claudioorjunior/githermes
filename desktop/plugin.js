@@ -346,10 +346,24 @@ async function ghApiBigPaginated(repo, path) {
 async function ghApiBigPaginatedProjected(repo, path, jq) {
   const items = await ghApiBigPaginated(repo, path)
   if (!jq || !items.length) return items
-  const payload = JSON.stringify(items)
-  const out = await shBig(`printf %s ${sq(payload)} | jq -c ${sq(jq)}`)
-  if (!out) return []
-  try { const v = JSON.parse(out); return Array.isArray(v) ? v : [] } catch { return [] }
+  // Codex P1+P2: avoid `jq` binary and large-payload printf arg — project in JS.
+  const proj = jq.replace(/^\s*\[.*\]\s*$/, '').trim()
+  // Recognize the two projections used by this plugin; fall back to raw items.
+  if (proj.includes('diff_hunk')) {
+    return items.map(c => ({
+      id: c.id, user: c.user?.login ?? c.user, body: c.body ?? '',
+      path: c.path, line: c.line, original_line: c.original_line,
+      in_reply_to_id: c.in_reply_to_id, created_at: c.created_at,
+      html_url: c.html_url, diff_hunk: c.diff_hunk ?? '',
+    }))
+  }
+  if (proj.includes('patch')) {
+    return items.map(f => ({
+      filename: f.filename, status: f.status,
+      additions: f.additions, deletions: f.deletions, patch: f.patch ?? '',
+    }))
+  }
+  return items
 }
 
 async function shJsonLoose(cmd) {
@@ -403,25 +417,27 @@ export function reviewState(decision) {
   return 'none'
 }
 
-const CHECK_RANK = { fail: 0, pending: 1, cancel: 1, skipping: 1, pass: 2 }
+const CHECK_RANK = { fail: 0, pending: 1, cancel: 1, skipping: 2, pass: 3 }
 
 export function checkTone(bucket) {
   const b = String(bucket || '').toLowerCase()
   if (b === 'pass' || b === 'success') return 'good'
   if (b === 'fail' || b === 'failure') return 'bad'
   if (b === 'pending') return 'warn'
-  if (b === 'cancel' || b === 'cancelled' || b === 'skipping') return 'bad'
+  if (b === 'cancel' || b === 'cancelled') return 'bad'
+  if (b === 'skipping') return 'muted'
   return 'muted'
 }
 
 export function summarizeChecks(checks) {
-  const counts = { fail: 0, pending: 0, pass: 0, other: 0, cancel: 0 }
+  const counts = { fail: 0, pending: 0, pass: 0, other: 0, cancel: 0, skipping: 0 }
   for (const c of checks || []) {
     const b = String(c?.bucket || '').toLowerCase()
     if (b === 'fail') counts.fail++
     else if (b === 'pending') counts.pending++
     else if (b === 'pass') counts.pass++
-    else if (b === 'cancel' || b === 'skipping' || b === 'cancelled') counts.cancel++
+    else if (b === 'cancel' || b === 'cancelled') counts.cancel++
+    else if (b === 'skipping') counts.skipping++
     else counts.other++
   }
   const title = counts.fail
@@ -432,7 +448,9 @@ export function summarizeChecks(checks) {
         ? `${counts.cancel} check${counts.cancel === 1 ? '' : 's'} canceled`
         : counts.other
           ? `${counts.other} check${counts.other === 1 ? '' : 's'} needs attention`
-          : (counts.pass) ? 'All checks passed' : 'No checks'
+          : counts.skipping && !counts.pass
+            ? `Skipped ${counts.skipping} check${counts.skipping === 1 ? '' : 's'}`
+            : (counts.pass || counts.skipping) ? 'All checks passed' : 'No checks'
   return { ...counts, title }
 }
 
@@ -951,6 +969,7 @@ function ChecksView({ checks, loading, error, onRetry, compact = false }) {
     summary.fail ? `${summary.fail} fail` : null,
     summary.pending ? `${summary.pending} pending` : null,
     summary.cancel ? `${summary.cancel} canceled` : null,
+    summary.skipping ? `${summary.skipping} skipped` : null,
     summary.other ? `${summary.other} other` : null,
     summary.pass ? `${summary.pass} pass` : null,
   ].filter(Boolean).join(' · ')
