@@ -219,6 +219,10 @@ export function prStateKey(d) {
 // Issue #10: statusCheckRollup -> one CI state. Two shapes in the rollup:
 // CheckRun (status QUEUED|IN_PROGRESS|COMPLETED + conclusion) and StatusContext
 // (state SUCCESS|FAILURE|ERROR|PENDING|EXPECTED). Failing wins over pending.
+const CI_FAILURES = new Set(['FAILURE', 'ERROR', 'CANCELLED', 'TIMED_OUT', 'ACTION_REQUIRED', 'STARTUP_FAILURE', 'STALE'])
+const CI_PENDING = new Set(['QUEUED', 'IN_PROGRESS', 'WAITING', 'REQUESTED', 'PENDING', 'EXPECTED'])
+const CI_PASSING = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED'])
+
 export function ciState(rollup) {
   const checks = Array.isArray(rollup) ? rollup : []
   if (!checks.length) return 'none'
@@ -228,8 +232,8 @@ export function ciState(rollup) {
       ? c.state
       : String(c?.status || '').toUpperCase() === 'COMPLETED' ? c.conclusion : c.status
     const s = String(raw || '').toUpperCase()
-    if (s === 'FAILURE' || s === 'ERROR' || s === 'CANCELLED' || s === 'TIMED_OUT' || s === 'ACTION_REQUIRED') return 'failing'
-    if (s === 'QUEUED' || s === 'IN_PROGRESS' || s === 'PENDING' || s === 'EXPECTED') pending = true
+    if (CI_FAILURES.has(s)) return 'failing'
+    if (CI_PENDING.has(s) || !CI_PASSING.has(s)) pending = true
   }
   return pending ? 'pending' : 'passing'
 }
@@ -1097,7 +1101,18 @@ function PrDetail({ repo, number, onBack }) {
       const reviews = await ghApiBig(repo, `pulls/${n}/reviews`, '[.[:15][]|{user:.user.login,state,html_url,body:(.body//""),submitted_at}]')
       // Issue #9: line-level review comments live on their own endpoint; bodies
       // and hunks are big, so same shBig routing as the rest of this query.
-      const inline = await ghApiBig(repo, `pulls/${n}/comments?per_page=100`, '[.[]|{id,user:.user.login,body:(.body//""),path,line,original_line,in_reply_to_id,created_at,html_url,diff_hunk:(.diff_hunk//"")}]')
+      const inline = (await ghApiBigPaginated(repo, `pulls/${n}/comments?per_page=100`)).map(c => ({
+        id: c.id,
+        user: c.user?.login,
+        body: c.body ?? '',
+        path: c.path,
+        line: c.line,
+        original_line: c.original_line,
+        in_reply_to_id: c.in_reply_to_id,
+        created_at: c.created_at,
+        html_url: c.html_url,
+        diff_hunk: c.diff_hunk ?? '',
+      }))
       return {
         comments: Array.isArray(comments) ? comments : [],
         reviews: Array.isArray(reviews) ? reviews : [],
