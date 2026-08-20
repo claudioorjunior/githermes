@@ -13,12 +13,16 @@ import {
   Button,
   Input,
   Badge,
+  CopyButton,
+  StatusDot,
   ScrollArea,
   EmptyState,
+  ErrorState,
   GlyphSpinner,
-  Tabs,
-  TabsList,
-  TabsTrigger,
+  Skeleton,
+  SearchField,
+  SegmentedControl,
+  Separator,
   Select,
   SelectContent,
   SelectItem,
@@ -39,6 +43,11 @@ import { jsx, jsxs, Fragment } from 'react/jsx-runtime'
 const ID = 'github-prs'
 const PANE_ID = `${ID}:pane`
 const REVEAL = 'hermes:pane-toggle-reveal'
+const GITHUB_ROUTE = '/github'
+// Registry areas as string literals — works even if the SDK build omits the
+// named exports; the host keys contributions by these exact strings.
+const ROUTES_AREA_LIT = 'routes'
+const SIDEBAR_NAV_LIT = 'sidebar.nav'
 const TRUNK = new Set(['main', 'master', 'dev', 'develop', 'trunk'])
 const GH = 'PATH=/opt/homebrew/bin:/usr/local/bin:$PATH gh'
 const PR_URL = /https?:\/\/github\.com\/([^/\s]+)\/([^/\s#?]+)\/pull\/(\d+)/i
@@ -51,17 +60,39 @@ let pluginCtx = null
 // layout so content reflows to the pane width. Inline style => !important needed.
 // Selectors are prefixed so they can only match inside this pane.
 const PANE_WRAP_CSS = `
-.github-prs-pane, .github-prs-pane * { box-sizing: border-box; min-width: 0; }
-.github-prs-pane { width: 100%; max-width: 100%; overflow: hidden; background: var(--ui-bg-editor); }
+.github-prs-pane, .github-prs-pane * { box-sizing: border-box; }
+.github-prs-pane {
+  width: 100%; max-width: 100%; min-width: 0; overflow: hidden; background: var(--ui-editor-surface-background);
+  container-type: inline-size;
+}
 .github-prs-pane [data-radix-scroll-area-viewport] > div { display: block !important; min-width: 0 !important; width: 100% !important; }
 .github-prs-pane :is(h1, h2, h3, h4, h5, h6, p, li, a, span, code, summary, td, th, blockquote) { max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }
 .github-prs-pane pre { max-width: 100%; overflow-x: auto; }
-/* divide color + active tab underline (Tailwind variants not compiled for runtime plugins) */
+/* Runtime plugins need scoped divide color because Tailwind variants are not compiled. */
 .github-prs-pane .gh-divide > :not(:last-child) { border-bottom: 1px solid var(--ui-stroke-secondary); }
-.github-prs-pane .gh-tab[data-state="active"] { border-bottom-color: var(--ui-accent); color: var(--ui-text-primary); }
 .github-prs-pane .gh-shell-header {
-  background: color-mix(in srgb, var(--ui-accent) 5%, var(--ui-bg-editor));
+  background: var(--ui-editor-surface-background);
   box-shadow: inset 0 -1px var(--ui-stroke-secondary);
+}
+.github-prs-pane .gh-empty-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--ui-stroke-secondary);
+  background: var(--ui-bg-quaternary);
+  color: var(--ui-text-secondary);
+}
+.github-prs-pane .gh-repo-trigger {
+  height: 32px;
+  border-radius: 999px;
+  background: transparent;
+  box-shadow: none;
+  border-color: var(--ui-stroke-secondary);
+}
+.github-prs-pane .gh-repo-trigger:hover,
+.github-prs-pane .gh-repo-trigger[data-state='open'] {
+  background: var(--ui-bg-quinary);
+  box-shadow: none;
 }
 .github-prs-pane .gh-list { display: flex; flex-direction: column; gap: 6px; padding: 8px; }
 .github-prs-pane .gh-list-row {
@@ -76,23 +107,100 @@ const PANE_WRAP_CSS = `
 }
 .github-prs-pane .gh-list-row:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 1px; }
 .github-prs-pane .gh-list-title { font-size: 13px; line-height: 18px; font-weight: 600; }
+.github-prs-pane .gh-list-heading { color: var(--ui-text-tertiary); letter-spacing: .04em; text-transform: uppercase; }
+.github-prs-pane .gh-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--ui-stroke-secondary);
+  border-radius: 999px;
+  background: var(--ui-bg-editor);
+  padding: 1px 6px;
+  color: var(--ui-text-secondary);
+  white-space: nowrap;
+}
+.github-prs-pane .gh-card-arrow { color: var(--ui-text-quaternary); opacity: .5; }
+.github-prs-pane .gh-list-row:hover .gh-card-arrow { color: var(--ui-accent); opacity: 1; }
+.github-prs-pane .gh-empty {
+  min-height: 280px;
+  background: transparent;
+}
+.github-prs-pane .gh-empty-icon { width: 48px; height: 48px; border-radius: 14px; font-size: 20px; }
 .github-prs-pane .gh-detail-summary {
-  background: color-mix(in srgb, var(--ui-bg-quaternary) 75%, var(--ui-bg-editor));
-  box-shadow: inset 3px 0 var(--ui-accent);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background-color: var(--ui-bg-quaternary);
+  background-image: radial-gradient(circle, color-mix(in srgb, var(--ui-stroke-secondary) 55%, transparent) 0.65px, transparent 0.7px);
+  background-size: 8px 8px;
 }
-.github-prs-pane .gh-detail-tabs { background: var(--ui-bg-editor); }
-.github-prs-pane .gh-comment { box-shadow: 0 1px 2px color-mix(in srgb, var(--ui-text-primary) 8%, transparent); }
-.github-prs-pane .gh-tab-panel { padding: 10px; }
-.github-prs-pane .gh-section-meta { font-size: 10px; letter-spacing: 0.02em; text-transform: uppercase; color: var(--ui-text-quaternary); }
-.github-prs-pane .gh-commit-list, .github-prs-pane .gh-checks-list, .github-prs-pane .gh-files-list { display: flex; flex-direction: column; gap: 6px; }
-.github-prs-pane .gh-commit-row, .github-prs-pane .gh-check-row, .github-prs-pane .gh-file-row {
-  display: flex; align-items: center; gap: 10px;
-  border: 1px solid var(--ui-stroke-secondary); border-radius: 8px;
-  background: var(--ui-bg-quaternary); padding: 8px 10px;
+.github-prs-pane .gh-detail-title { display: block; }
+.github-prs-pane .gh-detail-title .gh-item-num { white-space: nowrap; }
+.github-prs-pane .gh-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 10px;
+  row-gap: 6px;
 }
-.github-prs-pane .gh-commit-row:hover, .github-prs-pane .gh-check-row:hover, .github-prs-pane .gh-file-row:hover { background: var(--ui-bg-quinary); }
-.github-prs-pane .gh-file-status { width: 18px; height: 18px; border-radius: 4px; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; flex-shrink: 0; }
-.github-prs-pane .gh-check-dot { width: 8px; height: 8px; border-radius: 999px; flex-shrink: 0; }
+.github-prs-pane .gh-detail-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.github-prs-pane .gh-detail-tabs { background: var(--ui-editor-surface-background); }
+.github-prs-pane .gh-detail-tabs > div { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.github-prs-pane .gh-detail-tabs button,
+.github-prs-pane .gh-list-tabs button { min-width: 0; overflow: hidden; padding-inline: 6px; text-overflow: ellipsis; white-space: nowrap; }
+.github-prs-pane .gh-list-tabs > div { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.github-prs-pane .gh-comment-action { opacity: .45; transition: opacity 120ms ease; }
+.github-prs-pane .gh-comment:hover .gh-comment-action,
+.github-prs-pane .gh-comment:focus-within .gh-comment-action { opacity: 1; }
+.github-prs-pane .gh-timeline { display: flex; flex-direction: column; gap: 12px; }
+.github-prs-pane .gh-timeline > :is(.gh-comment, .gh-commit) { position: relative; }
+.github-prs-pane .gh-timeline > .gh-comment:has(+ .gh-comment)::after,
+.github-prs-pane .gh-timeline > .gh-commit:has(+ .gh-commit)::after {
+  content: '';
+  position: absolute;
+  left: 11px;
+  width: 1px;
+  background: var(--ui-stroke-secondary);
+  pointer-events: none;
+}
+.github-prs-pane .gh-timeline > .gh-comment:has(+ .gh-comment)::after { top: 26px; bottom: -12px; }
+.github-prs-pane .gh-timeline > .gh-commit:has(+ .gh-commit)::after { top: 16px; bottom: -12px; }
+.github-prs-pane .gh-commit-node {
+  width: 8px; height: 8px; margin: 6px 7px 0; flex: none;
+  border-radius: 50%;
+  border: 1.5px solid var(--ui-text-quaternary);
+  background: var(--ui-editor-surface-background);
+}
+.github-prs-pane .gh-commit-action { opacity: .45; transition: opacity 120ms ease; }
+.github-prs-pane .gh-commit:hover .gh-commit-action,
+.github-prs-pane .gh-commit:focus-within .gh-commit-action { opacity: 1; }
+.github-prs-pane .gh-commit > summary { cursor: pointer; list-style: none; }
+.github-prs-pane .gh-commit > summary::-webkit-details-marker { display: none; }
+.github-prs-pane .gh-commit-panel { margin-left: 26px; margin-top: 8px; padding-bottom: 4px; }
+.github-prs-pane .gh-narrow-only { display: none; }
+@container (max-width: 359px) {
+  .github-prs-pane .gh-detail-tabs > div { display: flex; width: 100%; overflow-x: auto; }
+  .github-prs-pane .gh-detail-tabs button { flex: none; min-width: max-content; }
+}
+@container (max-width: 299px) {
+  .github-prs-pane .gh-comment { display: block; }
+  .github-prs-pane .gh-comment-avatar { display: none; }
+  .github-prs-pane .gh-timeline > .gh-comment:has(+ .gh-comment)::after,
+  .github-prs-pane .gh-timeline > .gh-commit:has(+ .gh-commit)::after { display: none; }
+  .github-prs-pane .gh-commit-action { opacity: 1; }
+  .github-prs-pane .gh-comment-action { opacity: 1; }
+  .github-prs-pane .gh-detail-meta { display: none; }
+  .github-prs-pane .gh-detail-title { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+}
+@container (max-width: 239px) {
+  .github-prs-pane .gh-pane-content { display: none; }
+  .github-prs-pane .gh-narrow-only { display: flex; }
+}
 `
 
 function sq(s) {
@@ -131,6 +239,11 @@ function openGithubPane() {
   try {
     window.dispatchEvent(new CustomEvent(REVEAL, { detail: { id: PANE_ID, mode: 'open' } }))
   } catch { /* older shells ignore */ }
+}
+
+function openGithubPage() {
+  if (typeof host.navigate === 'function') host.navigate(GITHUB_ROUTE)
+  else openGithubPane()
 }
 
 function openExternal(url) {
@@ -281,6 +394,53 @@ export function reviewState(decision) {
   return 'none'
 }
 
+const CHECK_RANK = { fail: 0, pending: 1, pass: 2 }
+
+export function checkTone(bucket) {
+  const b = String(bucket || '').toLowerCase()
+  if (b === 'pass' || b === 'success') return 'good'
+  if (b === 'fail' || b === 'failure') return 'bad'
+  if (b === 'pending') return 'warn'
+  return 'muted'
+}
+
+export function summarizeChecks(checks) {
+  const counts = { fail: 0, pending: 0, pass: 0, other: 0 }
+  for (const c of checks || []) {
+    const b = String(c?.bucket || '').toLowerCase()
+    if (b === 'fail') counts.fail++
+    else if (b === 'pending') counts.pending++
+    else if (b === 'pass') counts.pass++
+    else counts.other++
+  }
+  const title = counts.fail
+    ? `Blocked by ${counts.fail} failing check${counts.fail === 1 ? '' : 's'}`
+    : counts.pending
+      ? `Waiting on ${counts.pending} check${counts.pending === 1 ? '' : 's'}`
+      : (counts.pass || counts.other) ? 'All checks passed' : 'No checks'
+  return { ...counts, title }
+}
+
+export function sortChecks(checks) {
+  return [...(checks || [])].sort((a, b) => {
+    const ra = CHECK_RANK[String(a?.bucket || '').toLowerCase()] ?? 3
+    const rb = CHECK_RANK[String(b?.bucket || '').toLowerCase()] ?? 3
+    return ra - rb || String(a?.name || '').localeCompare(String(b?.name || ''))
+  })
+}
+
+export function matchesListQuery(item, query) {
+  const q = String(query || '').trim().toLowerCase()
+  if (!q) return true
+  return [
+    item?.number,
+    item?.title,
+    item?.author?.login,
+    item?.headRefName,
+    ...(Array.isArray(item?.labels) ? item.labels.map(label => label?.name) : []),
+  ].some(value => String(value || '').toLowerCase().includes(q))
+}
+
 // Issue #9: REST review comments -> threads. Replies carry in_reply_to_id
 // pointing at the thread root; an orphan (root outside the fetched page)
 // anchors its own thread. Cap: first 30 threads, bodies never truncated.
@@ -314,6 +474,7 @@ const $repo = atom('')
 // Last session repo auto-applied; lets a manual pick stand until the session repo changes.
 let lastAutoRepo = null
 const $tab = atom('prs')
+const $listQuery = atom('')
 const $prState = atom('open')
 const $issueState = atom('open')
 const $selPr = atom(null)
@@ -399,9 +560,15 @@ const REVIEW_LABEL = { approved: 'Approved', changes: 'Changes requested', requi
 function StatusDots({ pr }) {
   const ci = ciState(pr.statusCheckRollup)
   const rv = reviewState(pr.reviewDecision)
-  return jsxs('span', { className: 'inline-flex items-center gap-1 shrink-0 self-center', children: [
-    jsx('span', { className: 'size-1.5 rounded-full', style: { background: CI_DOT[ci] }, title: CI_LABEL[ci] }),
-    jsx('span', { className: 'size-1.5 rounded-full', style: { background: REVIEW_DOT[rv] }, title: REVIEW_LABEL[rv] }),
+  return jsxs('span', { className: 'inline-flex flex-wrap items-center gap-1 text-[10px]', children: [
+    jsxs('span', { className: 'gh-status-chip', title: CI_LABEL[ci], children: [
+      jsx('span', { className: 'size-1.5 rounded-full', style: { background: CI_DOT[ci] } }),
+      CI_LABEL[ci],
+    ] }),
+    jsxs('span', { className: 'gh-status-chip', title: REVIEW_LABEL[rv], children: [
+      jsx('span', { className: 'size-1.5 rounded-full', style: { background: REVIEW_DOT[rv] } }),
+      REVIEW_LABEL[rv],
+    ] }),
   ] })
 }
 
@@ -415,8 +582,8 @@ const STATE_PILL = {
 function StatePill({ d }) {
   const m = STATE_PILL[prStateKey(d)] || STATE_PILL.open
   return jsxs('span', {
-    className: 'inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-medium text-white',
-    style: { background: m.bg },
+    className: 'inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-medium',
+    style: { background: 'var(--ui-bg-editor)', color: m.bg, border: `1px solid ${m.bg}` },
     children: [jsx(Codicon, { name: m.icon }), m.label],
   })
 }
@@ -488,6 +655,18 @@ function SessionPrChip() {
   return null
 }
 
+function RepoLabel({ repo, size = 20 }) {
+  const [owner, name] = String(repo || '').split('/')
+  return jsxs('span', { className: 'flex min-w-0 items-center gap-2 text-left', children: [
+    jsx(Avatar, { login: owner, size }),
+    jsxs('span', { className: 'min-w-0 truncate', children: [
+      owner ? jsx('span', { className: 'text-(--ui-text-tertiary)', children: owner }) : null,
+      owner ? jsx('span', { className: 'mx-0.5 opacity-50', children: '/' }) : null,
+      jsx('span', { className: 'font-medium text-(--ui-text-primary)', children: name || repo }),
+    ] }),
+  ] })
+}
+
 function RepoPicker({ repos, value, onChange }) {
   const [manual, setManual] = useState('')
   if (!repos?.length) {
@@ -503,8 +682,14 @@ function RepoPicker({ repos, value, onChange }) {
     value: value || '__none__',
     onValueChange: v => { if (v !== '__none__') onChange(v) },
     children: [
-      jsx(SelectTrigger, { className: 'h-7 text-xs', children: jsx(SelectValue, { placeholder: 'Select repo' }) }),
-      jsx(SelectContent, { children: repos.map(r => jsx(SelectItem, { value: r, children: r }, r)) }),
+      jsx(SelectTrigger, {
+        className: 'gh-repo-trigger text-xs',
+        children: jsx(SelectValue, {
+          placeholder: 'Select repository',
+          children: value ? jsx(RepoLabel, { repo: value }) : undefined,
+        }),
+      }),
+      jsx(SelectContent, { children: repos.map(r => jsx(SelectItem, { value: r, children: jsx(RepoLabel, { repo: r, size: 18 }) }, r)) }),
     ],
   })
 }
@@ -529,7 +714,7 @@ function LabelChip({ label, className }) {
   const color = label.color ? labelTextColor(label.color) : 'var(--ui-text-secondary)'
   return jsx('span', {
     className: cn('inline-flex items-center px-1.5 py-px rounded-full text-[10px] font-medium leading-none shrink-0', className),
-    style: { backgroundColor: bg, color, border: '1px solid rgba(0,0,0,0.1)' },
+    style: { backgroundColor: bg, color, border: '1px solid color-mix(in srgb, currentColor 18%, transparent)' },
     children: label.name,
   })
 }
@@ -574,8 +759,8 @@ function FileStatusBadge({ status }) {
   }
   const meta = map[s] || { label: '•', bg: 'var(--ui-text-quaternary)', title: s || 'Changed' }
   return jsx('span', {
-    className: 'inline-flex items-center justify-center w-3.5 h-3.5 rounded text-[9px] font-bold text-white shrink-0',
-    style: { backgroundColor: meta.bg },
+    className: 'inline-flex items-center justify-center w-3.5 h-3.5 rounded text-[9px] font-bold shrink-0',
+    style: { backgroundColor: 'var(--ui-bg-editor)', color: meta.bg, border: `1px solid ${meta.bg}` },
     title: meta.title,
     children: meta.label,
   })
@@ -588,24 +773,19 @@ function FileDiffBlock({ file }) {
 
   return jsxs('details', {
     open: defaultOpen,
-    className: 'group border border-(--ui-stroke-secondary) rounded-md overflow-hidden bg-(--ui-bg-editor) text-xs',
+    className: 'group text-xs',
     children: [
       jsxs('summary', {
-        className: 'cursor-pointer select-none px-3 py-2 bg-(--ui-bg-quaternary) border-b border-(--ui-stroke-secondary) flex items-center justify-between gap-2 text-xs font-mono hover:bg-(--ui-bg-quinary)',
+        className: 'cursor-pointer select-none flex items-center gap-2 rounded-md px-1 py-1.5 font-mono hover:bg-(--ui-bg-quinary)',
         children: [
-          jsxs('div', {
-            className: 'flex items-center gap-1.5 min-w-0 flex-1',
-            children: [
-              jsx(FileStatusBadge, { status: file.status }),
-              jsx('span', { className: 'truncate font-medium text-(--ui-text-primary)', title: file.filename, children: file.filename }),
-            ],
-          }),
+          jsx(FileStatusBadge, { status: file.status }),
+          jsx('span', { className: 'min-w-0 flex-1 truncate font-medium text-(--ui-text-primary)', title: file.filename, children: file.filename }),
           jsx(DiffCount, { add: file.additions, del: file.deletions, className: 'shrink-0' }),
         ],
       }),
       file.patch && rows.length
         ? jsx('div', {
-            className: 'overflow-x-auto font-mono text-[11px] leading-5',
+            className: 'mt-1 overflow-x-auto rounded-md border border-(--ui-stroke-secondary) font-mono text-[11px] leading-5',
             children: jsx('table', {
               className: 'w-full border-collapse',
               children: jsx('tbody', {
@@ -623,9 +803,9 @@ function FileDiffBlock({ file }) {
                   const isAdd = r.type === 'add'
                   const isDel = r.type === 'del'
                   const bgStyle = isAdd
-                    ? { backgroundColor: 'rgba(34, 197, 94, 0.10)' }
+                    ? { backgroundColor: 'var(--ui-diff-add-background)' }
                     : isDel
-                    ? { backgroundColor: 'rgba(239, 68, 68, 0.10)' }
+                    ? { backgroundColor: 'var(--ui-diff-remove-background)' }
                     : undefined
                   const textColor = isAdd
                     ? 'text-(--ui-diff-add-foreground)'
@@ -661,13 +841,144 @@ function FileDiffBlock({ file }) {
             }),
           })
         : jsx('div', {
-            className: 'p-3 text-xs text-(--ui-text-tertiary) italic bg-(--ui-bg-editor)',
+            className: 'mt-1 px-2 py-2 text-xs italic text-(--ui-text-tertiary)',
             children: file.status === 'renamed'
               ? 'File renamed without changes'
               : 'Binary file or no diff content to display',
           }),
     ],
   })
+}
+
+function CommitsView({ repo, commits, loading, error, onRetry }) {
+  if (loading) return jsx(ListSkeleton, {})
+  if (error) return jsx(ListErrorState, { title: 'Could not load commits', error, onRetry })
+  if (!commits.length) return jsx(EmptyState, { title: 'No commits' })
+  return jsx('div', { className: 'gh-timeline', children: commits.map(c => jsx(CommitRow, { repo, commit: c }, c.full || c.sha)) })
+}
+
+function CommitRow({ repo, commit }) {
+  const [open, setOpen] = useState(false)
+  const sha = commit.full || commit.sha
+  const url = commit.full ? `https://github.com/${repo}/commit/${commit.full}` : null
+  const q = useQuery({
+    queryKey: [ID, 'commit', repo, sha],
+    enabled: open && !!repo && !!sha,
+    queryFn: () => ghApiBig(repo, `commits/${sha}`, '{msg:.commit.message,additions:.stats.additions,deletions:.stats.deletions,files:[.files[:20][]|{filename,status,additions,deletions}]}'),
+    staleTime: 60_000,
+  })
+  const files = Array.isArray(q.data?.files) ? q.data.files : []
+  const extra = String(q.data?.msg || '').split('\n').slice(1).join('\n').trim()
+  return jsxs('details', {
+    className: 'gh-commit',
+    onToggle: e => setOpen(e.currentTarget.open),
+    children: [
+      jsxs('summary', { className: 'flex items-start gap-2', children: [
+        jsx('span', { className: 'gh-commit-node', 'aria-hidden': true }),
+        jsxs('div', { className: 'min-w-0 flex-1 py-0.5', children: [
+          jsx('div', { className: 'truncate text-xs font-medium leading-5 text-(--ui-text-primary)', title: commit.msg, children: commit.msg || '—' }),
+          jsxs('div', { className: 'mt-0.5 truncate text-[10px] text-(--ui-text-quaternary)', children: [
+            commit.author,
+            commit.date ? ` · ${ago(commit.date)}` : '',
+          ] }),
+        ] }),
+        jsxs('span', {
+          className: 'flex shrink-0 items-center gap-0.5 pt-0.5',
+          onClick: e => e.stopPropagation(),
+          children: [
+            jsx(CopyButton, { appearance: 'inline', className: 'font-mono text-[10px]', label: 'Copy SHA', text: sha, children: commit.sha }),
+            url ? jsx(Button, { variant: 'ghost', size: 'sm', className: 'gh-commit-action h-6 w-6 p-0', 'aria-label': 'Open commit on GitHub', onClick: () => openExternal(url), children: jsx(Codicon, { name: 'link-external' }) }) : null,
+          ],
+        }),
+      ] }),
+      jsx('div', { className: 'gh-commit-panel space-y-2', children: !open
+        ? null
+        : q.isLoading
+          ? jsx(Skeleton, { className: 'h-16 w-full rounded-md' })
+          : q.isError
+            ? jsx('div', { className: 'text-[11px] text-(--ui-text-tertiary)', children: 'Could not load commit.' })
+            : jsxs(Fragment, { children: [
+                extra ? jsx('pre', { className: 'whitespace-pre-wrap font-sans text-[11px] leading-5 text-(--ui-text-secondary)', children: extra }) : null,
+                jsxs('div', { className: 'flex items-center gap-2 text-[11px] text-(--ui-text-tertiary)', children: [
+                  jsx(DiffCount, { add: q.data?.additions, del: q.data?.deletions }),
+                  jsx('span', { children: `${files.length}${files.length === 20 ? '+' : ''} file${files.length === 1 ? '' : 's'}` }),
+                ] }),
+                files.length
+                  ? jsx('div', { className: 'space-y-0.5', children: files.map(f => jsxs('div', {
+                      className: 'flex items-center gap-2 py-0.5 font-mono text-[11px]',
+                      children: [
+                        jsx(FileStatusBadge, { status: f.status }),
+                        jsx('span', { className: 'min-w-0 flex-1 truncate text-(--ui-text-secondary)', title: f.filename, children: f.filename }),
+                        jsx(DiffCount, { add: f.additions, del: f.deletions, className: 'shrink-0' }),
+                      ],
+                    }, f.filename)) })
+                  : null,
+              ] }),
+      }),
+    ],
+  })
+}
+
+function ChecksView({ checks, loading, error, onRetry, compact = false }) {
+  if (loading) return compact ? jsx(Skeleton, { className: 'h-9 w-full rounded-md' }) : jsx(ListSkeleton, {})
+  if (error) return compact ? null : jsx(ListErrorState, { title: 'Could not load checks', error, onRetry })
+  if (!checks.length) return compact ? null : jsx(EmptyState, { title: 'No checks', description: 'Nothing reported for this PR.' })
+  const summary = summarizeChecks(checks)
+  const tone = summary.fail ? 'bad' : summary.pending ? 'warn' : 'good'
+  const counts = [
+    summary.fail ? `${summary.fail} fail` : null,
+    summary.pending ? `${summary.pending} pending` : null,
+    summary.pass ? `${summary.pass} pass` : null,
+  ].filter(Boolean).join(' · ')
+  const head = jsxs('div', { className: 'flex items-center gap-2', children: [
+    jsx(StatusDot, { tone }),
+    jsx('span', { className: 'text-xs font-medium text-(--ui-text-primary)', children: summary.title }),
+    counts ? jsx('span', { className: 'text-[10px] text-(--ui-text-quaternary)', children: counts }) : null,
+  ] })
+  const list = jsx('div', { className: 'space-y-0.5', children: sortChecks(checks).map(c => jsxs('button', {
+    type: 'button',
+    disabled: !c.link,
+    onClick: () => c.link && openExternal(c.link),
+    className: 'flex w-full items-start gap-2.5 rounded-md px-1 py-1.5 text-left hover:bg-(--ui-bg-quinary) disabled:hover:bg-transparent',
+    children: [
+      jsx('span', { className: 'mt-1.5 shrink-0', children: jsx(StatusDot, { tone: checkTone(c.bucket) }) }),
+      jsxs('span', { className: 'min-w-0 flex-1', children: [
+        jsx('span', { className: 'block text-xs text-(--ui-text-primary)', children: c.name }),
+        jsx('span', { className: 'block text-[10px] text-(--ui-text-quaternary)', children: c.state }),
+      ] }),
+      c.link ? jsx(Codicon, { name: 'link-external', className: 'mt-0.5 shrink-0 text-(--ui-text-quaternary)' }) : null,
+    ],
+  }, `${c.name}:${c.state}`)) })
+  if (compact) {
+    return jsxs('details', {
+      open: summary.fail > 0,
+      className: 'rounded-md border border-(--ui-stroke-secondary) px-3 py-2',
+      children: [
+        jsx('summary', { className: 'cursor-pointer select-none', children: head }),
+        jsx('div', { className: 'mt-2', children: list }),
+      ],
+    })
+  }
+  return jsxs('div', { className: 'space-y-3', children: [jsx('div', { className: 'px-0.5', children: head }), list] })
+}
+
+function FilesView({ files, loading, error, onRetry }) {
+  if (loading) return jsx(ListSkeleton, {})
+  if (error) return jsx(ListErrorState, { title: 'Could not load files', error, onRetry })
+  if (!files.length) return jsx(EmptyState, { title: 'No files changed' })
+  let add = 0
+  let del = 0
+  for (const f of files) {
+    add += f.additions || 0
+    del += f.deletions || 0
+  }
+  return jsxs('div', { className: 'space-y-2', children: [
+    jsxs('div', { className: 'flex items-center gap-2 px-0.5 text-[11px] text-(--ui-text-tertiary)', children: [
+      jsx('span', { children: `${files.length} file${files.length === 1 ? '' : 's'}` }),
+      jsx(DiffCount, { add, del }),
+    ] }),
+    jsx('div', { className: 'space-y-1', children: files.map(f => jsx(FileDiffBlock, { file: f }, f.filename)) }),
+  ] })
 }
 
 // Issue #2: Merge PR control (method select, delete-branch checkbox, confirm, error handling)
@@ -702,7 +1013,7 @@ function MergeControl({ repo, number }) {
   if (!open) {
     return jsx(Button, {
       size: 'sm',
-      className: 'h-5 px-2 text-[10px] gap-1 bg-(--ui-purple) text-white hover:opacity-90 ml-auto',
+      className: 'h-5 px-2 text-[10px] gap-1 ml-auto',
       onClick: () => { setOpen(true); setError(null) },
       children: [
         jsx(Codicon, { name: 'git-merge' }),
@@ -782,7 +1093,7 @@ function MergeControl({ repo, number }) {
           }),
           jsx(Button, {
             size: 'sm',
-            className: 'h-6 px-2.5 text-xs bg-(--ui-purple) text-white hover:opacity-90',
+            className: 'h-6 px-2.5 text-xs',
             disabled: isMerging,
             onClick: handleMerge,
             children: isMerging ? 'Merging...' : `Confirm ${methodLabel}`,
@@ -809,11 +1120,37 @@ function Avatar({ login, size = 20 }) {
 
 function Person({ login, extra, size = 18 }) {
   return jsxs('span', {
-    className: 'inline-flex items-center gap-1.5 min-w-0',
+    className: 'inline-flex min-w-0 items-center gap-1.5',
     children: [
       jsx(Avatar, { login, size }),
-      jsx('span', { className: 'font-semibold text-(--ui-text-primary) truncate', children: login || '—' }),
-      extra ? jsx('span', { className: 'text-(--ui-text-tertiary)', children: extra }) : null,
+      jsx('span', { className: 'truncate font-semibold text-(--ui-text-primary)', children: login || '—' }),
+      extra ? jsx('span', { className: 'shrink-0 text-(--ui-text-tertiary)', children: extra }) : null,
+    ],
+  })
+}
+
+function ItemTitle({ title, number, detail = false }) {
+  return jsxs(detail ? 'h1' : 'span', {
+    className: detail ? 'gh-detail-title text-base font-semibold leading-snug' : 'gh-list-title',
+    children: [
+      title,
+      jsx('span', { className: 'gh-item-num ml-1.5 font-mono text-[10px] font-normal text-(--ui-text-quaternary)', children: `#${number}` }),
+    ],
+  })
+}
+
+function StateSelect({ kind }) {
+  const isPr = kind === 'prs'
+  const value = useValue(isPr ? $prState : $issueState)
+  return jsxs(Select, {
+    value,
+    onValueChange: v => (isPr ? $prState : $issueState).set(v),
+    children: [
+      jsx(SelectTrigger, { className: 'h-7 w-24 shrink-0 text-xs', children: jsx(SelectValue, {}) }),
+      jsxs(SelectContent, { children: isPr
+        ? [jsx(SelectItem, { value: 'open', children: 'Open' }, 'open'), jsx(SelectItem, { value: 'closed', children: 'Closed' }, 'closed'), jsx(SelectItem, { value: 'merged', children: 'Merged' }, 'merged'), jsx(SelectItem, { value: 'all', children: 'All' }, 'all')]
+        : [jsx(SelectItem, { value: 'open', children: 'Open' }, 'open'), jsx(SelectItem, { value: 'closed', children: 'Closed' }, 'closed'), jsx(SelectItem, { value: 'all', children: 'All' }, 'all')],
+      }),
     ],
   })
 }
@@ -831,46 +1168,52 @@ const REVIEW_BADGE = {
 function SendToChatButton({ comment, className }) {
   const activeId = useValue(host.state.activeSessionId)
   const wrap = cn('inline-flex shrink-0', className)
-  const btn = jsxs(Button, {
+  const btn = jsx(Button, {
     variant: 'ghost',
     size: 'sm',
-    className: 'h-6 px-1.5 gap-1 text-[10px]',
+    className: 'h-6 w-6 p-0',
+    'aria-label': 'Quote in chat',
     disabled: !activeId,
     onClick: () => sendCommentToChat(comment),
-    children: [
-      jsx(Codicon, { name: 'comment' }),
-      jsx('span', { children: 'Quote' }),
-    ],
+    children: jsx(Codicon, { name: 'comment' }),
   })
   if (!activeId) return jsx('span', { className: wrap, title: 'No active session — open a chat first', children: btn })
   return jsx(Tip, { label: 'Quote in chat', children: jsx('span', { className: wrap, children: btn }) })
 }
 
-// GitHub-style comment card: tinted header bar (avatar · login · verb · time [+ review badge]), body below.
+// Open conversation row: Copilot-style attributed content without a box around every message.
 // Issue #9: inline review comments add a file:line chip and a collapsed diff-hunk block.
 function CommentCard({ login, verb, time, timestamp, reviewState, body, permalink, size = 18, fileChip, hunk }) {
   const badge = reviewState ? REVIEW_BADGE[String(reviewState).toUpperCase()] : null
-  return jsxs('article', { className: 'gh-comment rounded-md border border-(--ui-stroke-secondary) overflow-hidden', children: [
-    jsxs('div', { className: 'flex items-center gap-1.5 bg-(--ui-bg-quaternary) border-b border-(--ui-stroke-secondary) px-2.5 py-1.5', children: [
-      jsx(Avatar, { login, size }),
-      jsx('span', { className: 'font-semibold text-xs text-(--ui-text-primary) truncate', children: login || '—' }),
-      jsx('span', { className: 'text-[11px] text-(--ui-text-tertiary) truncate', children: verb }),
-      time ? jsx('span', { className: 'text-[11px] text-(--ui-text-quaternary) shrink-0', children: time }) : null,
-      fileChip ? jsx('span', { className: 'inline-flex max-w-[45%] items-center gap-1 rounded border border-(--ui-stroke-secondary) bg-(--ui-bg-quinary) px-1.5 py-px font-mono text-[10px] text-(--ui-text-secondary)', title: fileChip, children: [
-        jsx(Codicon, { name: 'file' }),
-        jsx('span', { className: 'truncate', children: fileChip }),
+  return jsxs('article', { className: 'gh-comment flex items-start gap-2.5 py-1', children: [
+    jsx('span', { className: 'gh-comment-avatar shrink-0 pt-0.5', children: jsx(Avatar, { login, size: Math.max(size, 22) }) }),
+    jsxs('div', { className: 'min-w-0 flex-1', children: [
+      jsxs('div', { className: 'flex min-w-0 items-start gap-2', children: [
+        jsxs('div', { className: 'min-w-0 flex-1', children: [
+          jsxs('div', { className: 'flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5', children: [
+            jsx('span', { className: 'font-semibold text-xs text-(--ui-text-primary)', children: login || '—' }),
+            jsx('span', { className: 'text-[11px] text-(--ui-text-tertiary)', children: verb }),
+            time ? jsx('span', { className: 'text-[10px] text-(--ui-text-quaternary)', children: time }) : null,
+          ] }),
+          fileChip || badge ? jsxs('div', { className: 'mt-1 flex flex-wrap items-center gap-1.5', children: [
+            fileChip ? jsxs('span', { className: 'inline-flex max-w-full items-center gap-1 rounded border border-(--ui-stroke-secondary) bg-(--ui-bg-quaternary) px-1.5 py-px font-mono text-[10px] text-(--ui-text-secondary)', title: fileChip, children: [
+              jsx(Codicon, { name: 'file' }),
+              jsx('span', { className: 'truncate', children: fileChip }),
+            ] }) : null,
+            badge ? jsxs('span', { className: 'inline-flex items-center gap-1 text-[10px] font-medium text-(--ui-text-secondary)', children: [
+              jsx('span', { className: 'size-1.5 rounded-full', style: { background: badge.color } }),
+              badge.label,
+            ] }) : null,
+          ] }) : null,
+        ] }),
+        jsx(SendToChatButton, { comment: { login, verb, timestamp, body, permalink }, className: 'gh-comment-action' }),
+      ] }),
+      hunk ? jsx('details', { className: 'mt-2 rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-quaternary) px-2.5 py-1.5', children: [
+        jsx('summary', { className: 'cursor-pointer select-none text-[10px] text-(--ui-text-tertiary)', children: 'Diff context' }),
+        jsx('pre', { className: 'mt-1 overflow-x-auto font-mono text-[10px] leading-4 text-(--ui-text-secondary)', children: hunk }),
       ] }) : null,
-      badge ? jsxs('span', { className: 'ml-auto inline-flex items-center gap-1 shrink-0 text-[10px] font-medium text-(--ui-text-secondary)', children: [
-        jsx('span', { className: 'size-1.5 rounded-full', style: { background: badge.color } }),
-        badge.label,
-      ] }) : null,
-      jsx(SendToChatButton, { comment: { login, verb, timestamp, body, permalink }, className: badge ? undefined : 'ml-auto' }),
+      jsx('div', { className: 'mt-2 pr-1', children: jsx(MdBody, { text: body }) }),
     ] }),
-    hunk ? jsx('details', { className: 'border-b border-(--ui-stroke-secondary) bg-(--ui-bg-quaternary) px-2.5 py-1', children: [
-      jsx('summary', { className: 'cursor-pointer select-none text-[10px] text-(--ui-text-tertiary)', children: 'Diff context' }),
-      jsx('pre', { className: 'mt-1 overflow-x-auto font-mono text-[10px] leading-4 text-(--ui-text-secondary)', children: hunk }),
-    ] }) : null,
-    jsx('div', { className: 'p-2.5', children: jsx(MdBody, { text: body }) }),
   ] })
 }
 
@@ -1024,7 +1367,67 @@ function MdBody({ text }) {
   })
 }
 
-function PrList({ repo, onOpen }) {
+function ListSkeleton() {
+  return jsx('div', { className: 'gh-list', 'aria-busy': true, 'aria-label': 'Loading list', children: [0, 1, 2].map(i =>
+    jsxs('div', { className: 'gh-list-row flex items-start gap-2.5 px-3 py-3', children: [
+      jsx(Skeleton, { className: 'size-6 shrink-0 rounded-full' }),
+      jsxs('div', { className: 'min-w-0 flex-1 space-y-2', children: [
+        jsx(Skeleton, { className: i === 1 ? 'h-3.5 w-4/5' : 'h-3.5 w-3/5' }),
+        jsx(Skeleton, { className: 'h-3 w-2/5' }),
+      ] }),
+    ] }, i)
+  ) })
+}
+
+function ListErrorState({ title, error, onRetry }) {
+  return jsx('div', { className: 'p-6', children: jsx(ErrorState, {
+    title,
+    description: String(error?.message || error),
+    children: jsx(Button, { variant: 'outline', size: 'sm', onClick: onRetry, children: 'Retry' }),
+  }) })
+}
+
+function ListEmptyState({ kind, state, repo, query }) {
+  const isPr = kind === 'prs'
+  const noun = isPr ? 'pull requests' : 'issues'
+  const title = query ? 'No matching results' : state === 'all' ? `No ${noun} found` : `No ${state} ${noun}`
+  return jsxs('div', { className: 'gh-empty flex h-full flex-col items-center justify-center px-8 py-10 text-center', children: [
+    jsx('span', { className: 'gh-empty-icon mb-4', children: jsx(Codicon, { name: isPr ? 'git-pull-request' : 'issues' }) }),
+    jsx('h3', { className: 'text-base font-semibold tracking-tight text-(--ui-text-primary)', children: title }),
+    jsx('p', { className: 'mt-1 max-w-64 text-xs leading-5 text-(--ui-text-tertiary)', children: query
+      ? `Nothing matches “${query}”. Try a title, number, author, branch, or label.`
+      : state === 'all'
+      ? `Nothing to show in ${repo}.`
+      : `There are no ${state} ${noun} in this repository.` }),
+    jsxs('div', { className: 'mt-4 flex flex-wrap justify-center gap-2', children: [
+      query ? jsx(Button, {
+        variant: 'outline',
+        size: 'sm',
+        onClick: () => $listQuery.set(''),
+        children: 'Clear search',
+      }) : state !== 'all' ? jsx(Button, {
+        variant: 'outline',
+        size: 'sm',
+        onClick: () => (isPr ? $prState : $issueState).set('all'),
+        children: 'Show all',
+      }) : null,
+      jsx(Button, {
+        variant: 'ghost',
+        size: 'sm',
+        onClick: () => $tab.set(isPr ? 'issues' : 'prs'),
+        children: isPr ? 'View issues' : 'View pull requests',
+      }),
+      jsx(Button, {
+        variant: 'ghost',
+        size: 'sm',
+        onClick: () => openExternal(`https://github.com/${repo}/${isPr ? 'pulls' : 'issues'}`),
+        children: jsxs('span', { className: 'flex items-center gap-1.5', children: [jsx(Codicon, { name: 'link-external' }), 'Open on GitHub'] }),
+      }),
+    ] }),
+  ] })
+}
+
+function PrList({ repo, onOpen, query }) {
   const state = useValue($prState)
   const q = useQuery({
     queryKey: [ID, 'prs', repo, state],
@@ -1035,15 +1438,22 @@ function PrList({ repo, onOpen }) {
     staleTime: 15_000,
   })
   if (!repo) return jsx(EmptyState, { title: 'Select a repository', description: 'Pick one above to list PRs.' })
-  if (q.isLoading) return jsx('div', { className: 'flex justify-center p-8', children: jsx(GlyphSpinner, {}) })
-  if (q.isError) return jsx('div', { className: 'p-3 text-xs text-(--ui-red)', children: String(q.error?.message || q.error) })
-  const items = Array.isArray(q.data) ? q.data : []
-  if (!items.length) return jsx(EmptyState, { title: 'No PRs', description: `No ${state} PRs in ${repo}.` })
+  if (q.isLoading) return jsx(ListSkeleton, {})
+  if (q.isError) return jsx(ListErrorState, { title: 'Could not load pull requests', error: q.error, onRetry: () => q.refetch() })
+  const allItems = Array.isArray(q.data) ? q.data : []
+  const items = allItems.filter(item => matchesListQuery(item, query))
+  if (!items.length) return jsx(ListEmptyState, { kind: 'prs', state, repo, query: allItems.length ? query : '' })
   return jsx(ScrollArea, {
     className: 'h-full',
     children: jsx('div', {
       className: 'gh-list',
-      children: items.map(pr =>
+      children: [
+        jsxs('div', { className: 'gh-list-heading flex items-center gap-1.5 px-1 py-0.5 text-[10px] font-semibold', children: [
+          jsx(Codicon, { name: 'git-pull-request' }),
+          jsx('span', { children: 'Pull requests' }),
+          jsx(Badge, { variant: 'secondary', className: 'ml-auto h-5 min-w-5 justify-center text-[10px]', children: String(items.length) }),
+        ] }),
+        ...items.map(pr =>
         jsxs('button', {
           type: 'button',
           onClick: () => onOpen(pr.number),
@@ -1053,27 +1463,25 @@ function PrList({ repo, onOpen }) {
             jsxs('span', {
               className: 'min-w-0 flex-1',
               children: [
-                jsxs('span', { className: 'flex gap-1.5 items-baseline flex-wrap', children: [
-                  jsx('span', { className: 'gh-list-title break-words', children: pr.title }),
-                  jsx('span', { className: 'font-mono text-[10px] text-(--ui-text-quaternary)', children: `#${pr.number}` }),
-                ] }),
+                jsx(ItemTitle, { title: pr.title, number: pr.number }),
                 jsxs('span', { className: 'mt-1 flex flex-wrap items-center gap-x-1.5 text-[10px] text-(--ui-text-tertiary)', children: [
                   jsx('span', { className: 'rounded bg-(--ui-bg-editor) px-1.5 py-0.5 font-mono', children: pr.headRefName || '—' }),
                   jsx(DiffCount, { add: pr.additions, del: pr.deletions }),
                   jsx('span', { children: `${pr.changedFiles ?? 0} files` }),
                   jsx('span', { className: 'text-(--ui-text-quaternary)', children: ago(pr.updatedAt) }),
+                  jsx(StatusDots, { pr }),
                 ] }),
               ],
             }),
-            jsx(StatusDots, { pr }),
+            jsx(Codicon, { name: 'chevron-right', className: 'gh-card-arrow mt-1 shrink-0', 'aria-hidden': true }),
           ],
         }, String(pr.number))
-      ),
+      )],
     }),
   })
 }
 
-function IssueList({ repo, onOpen }) {
+function IssueList({ repo, onOpen, query }) {
   const state = useValue($issueState)
   const q = useQuery({
     queryKey: [ID, 'issues', repo, state],
@@ -1083,15 +1491,22 @@ function IssueList({ repo, onOpen }) {
     staleTime: 15_000,
   })
   if (!repo) return jsx(EmptyState, { title: 'Select a repository', description: 'Pick one above to list issues.' })
-  if (q.isLoading) return jsx('div', { className: 'flex justify-center p-8', children: jsx(GlyphSpinner, {}) })
-  if (q.isError) return jsx('div', { className: 'p-3 text-xs text-(--ui-red)', children: String(q.error?.message || q.error) })
-  const items = Array.isArray(q.data) ? q.data : []
-  if (!items.length) return jsx(EmptyState, { title: 'No issues', description: `No ${state} issues in ${repo}.` })
+  if (q.isLoading) return jsx(ListSkeleton, {})
+  if (q.isError) return jsx(ListErrorState, { title: 'Could not load issues', error: q.error, onRetry: () => q.refetch() })
+  const allItems = Array.isArray(q.data) ? q.data : []
+  const items = allItems.filter(item => matchesListQuery(item, query))
+  if (!items.length) return jsx(ListEmptyState, { kind: 'issues', state, repo, query: allItems.length ? query : '' })
   return jsx(ScrollArea, {
     className: 'h-full',
     children: jsx('div', {
       className: 'gh-list',
-      children: items.map(it =>
+      children: [
+        jsxs('div', { className: 'gh-list-heading flex items-center gap-1.5 px-1 py-0.5 text-[10px] font-semibold', children: [
+          jsx(Codicon, { name: 'issues' }),
+          jsx('span', { children: 'Issues' }),
+          jsx(Badge, { variant: 'secondary', className: 'ml-auto h-5 min-w-5 justify-center text-[10px]', children: String(items.length) }),
+        ] }),
+        ...items.map(it =>
         jsxs('button', {
           type: 'button',
           onClick: () => onOpen(it.number),
@@ -1101,21 +1516,67 @@ function IssueList({ repo, onOpen }) {
             jsxs('span', {
               className: 'min-w-0 flex-1',
               children: [
-                jsxs('span', { className: 'flex gap-1.5 items-baseline flex-wrap', children: [
-                  jsx('span', { className: 'gh-list-title break-words', children: it.title }),
-                  jsx('span', { className: 'font-mono text-[10px] text-(--ui-text-quaternary)', children: `#${it.number}` }),
-                  Array.isArray(it.labels) && it.labels.length
-                    ? jsx('span', { className: 'inline-flex flex-wrap gap-1 items-center', children: it.labels.map(l => jsx(LabelChip, { label: l }, l.name || l.id)) })
-                    : null,
-                ] }),
+                jsx(ItemTitle, { title: it.title, number: it.number }),
+                Array.isArray(it.labels) && it.labels.length
+                  ? jsx('span', { className: 'mt-1 flex flex-wrap gap-1 items-center', children: it.labels.map(l => jsx(LabelChip, { label: l }, l.name || l.id)) })
+                  : null,
                 jsx('span', { className: 'text-[10px] text-(--ui-text-tertiary)', children: `${it.author?.login || '—'} · ${ago(it.updatedAt)}` }),
               ],
             }),
+            jsx(Codicon, { name: 'chevron-right', className: 'gh-card-arrow mt-1 shrink-0', 'aria-hidden': true }),
           ],
         }, String(it.number))
-      ),
+      )],
     }),
   })
+}
+
+function DetailToolbar({ repo, number, url, onBack, backLabel }) {
+  const [owner, name] = String(repo || '').split('/')
+  return jsxs('div', {
+    className: 'shrink-0 border-b border-(--ui-stroke-secondary) bg-(--ui-editor-surface-background) px-3 py-2 flex items-center gap-1.5 text-xs text-(--ui-text-tertiary)',
+    children: [
+      jsx(Button, { variant: 'ghost', size: 'sm', className: 'h-7 w-7 p-0 -ml-1', onClick: onBack, 'aria-label': backLabel, children: jsx(Codicon, { name: 'chevron-left' }) }),
+      jsxs('span', { className: 'gh-detail-repo min-w-0 flex-1 truncate', children: [
+        jsx('span', { children: owner }),
+        jsx('span', { className: 'mx-0.5 opacity-50', children: '/' }),
+        jsx('span', { className: 'font-medium text-(--ui-text-primary)', children: name }),
+      ] }),
+      url ? jsxs('span', { className: 'ml-auto flex shrink-0 items-center gap-0.5', children: [
+        jsx(CopyButton, { appearance: 'icon', buttonSize: 'icon-sm', label: 'Copy GitHub URL', text: url }),
+        jsx(Button, { variant: 'ghost', size: 'sm', className: 'h-7 w-7 p-0', onClick: () => openExternal(url), 'aria-label': 'Open on GitHub', children: jsx(Codicon, { name: 'link-external' }) }),
+      ] }) : null,
+    ],
+  })
+}
+
+function DetailSummary({ title, number, children }) {
+  return jsxs('div', {
+    className: 'gh-detail-summary shrink-0 border-b border-(--ui-stroke-secondary) px-3 py-2',
+    children: [
+      jsx(ItemTitle, { title, number, detail: true }),
+      children,
+    ],
+  })
+}
+
+function DetailLoading({ repo, number, onBack, backLabel }) {
+  return jsxs('div', { className: 'flex h-full flex-col', children: [
+    jsx(DetailToolbar, { repo, number, onBack, backLabel }),
+    jsxs('div', { className: 'space-y-3 p-4', 'aria-busy': true, children: [
+      jsx(Skeleton, { className: 'h-5 w-4/5' }),
+      jsx(Skeleton, { className: 'h-4 w-3/5' }),
+      jsx(Separator, {}),
+      jsx(Skeleton, { className: 'h-24 w-full rounded-md' }),
+    ] }),
+  ] })
+}
+
+function DetailError({ repo, number, title, error, onBack, backLabel }) {
+  return jsxs('div', { className: 'flex h-full flex-col', children: [
+    jsx(DetailToolbar, { repo, number, onBack, backLabel }),
+    jsx('div', { className: 'p-6', children: jsx(ErrorState, { title, description: String(error?.message || error) }) }),
+  ] })
 }
 
 function PrDetail({ repo, number, onBack }) {
@@ -1136,18 +1597,7 @@ function PrDetail({ repo, number, onBack }) {
       const reviews = await ghApiBig(repo, `pulls/${n}/reviews`, '[.[:15][]|{user:.user.login,state,html_url,body:(.body//""),submitted_at}]')
       // Issue #9: line-level review comments live on their own endpoint; bodies
       // and hunks are big, so same shBig routing as the rest of this query.
-      const inline = (await ghApiBigPaginated(repo, `pulls/${n}/comments?per_page=100`)).map(c => ({
-        id: c.id,
-        user: c.user?.login,
-        body: c.body ?? '',
-        path: c.path,
-        line: c.line,
-        original_line: c.original_line,
-        in_reply_to_id: c.in_reply_to_id,
-        created_at: c.created_at,
-        html_url: c.html_url,
-        diff_hunk: c.diff_hunk ?? '',
-      }))
+      const inline = await ghApiBig(repo, `pulls/${n}/comments?per_page=100`, '[.[]|{id,user:.user.login,body:(.body//""),path,line,original_line,in_reply_to_id,created_at,html_url,diff_hunk:(.diff_hunk//"")}]')
       return {
         comments: Array.isArray(comments) ? comments : [],
         reviews: Array.isArray(reviews) ? reviews : [],
@@ -1167,13 +1617,13 @@ function PrDetail({ repo, number, onBack }) {
   const commitsQ = useQuery({
     queryKey: [ID, 'pr-commits', repo, n],
     enabled: !!repo && !!number && page === 'commits',
-    queryFn: () => ghApi(repo, `pulls/${n}/commits`, '[.[:30][]|{sha:.sha[0:7],msg:(.commit.message|split("\n")[0]),author:(.commit.author.name//.author.login//"—")}]'),
+    queryFn: () => ghApi(repo, `pulls/${n}/commits`, '[.[:30][]|{sha:.sha[0:7],full:.sha,msg:(.commit.message|sub("\\n.*";"")),author:(.commit.author.name//.author.login//"—"),date:(.commit.author.date//"")}]'),
     staleTime: 15_000,
     refetchInterval: 30_000,
   })
   const checksQ = useQuery({
     queryKey: [ID, 'pr-checks', repo, n],
-    enabled: !!repo && !!number && page === 'checks',
+    enabled: !!repo && !!number && (page === 'checks' || page === 'conversation'),
     queryFn: async () => {
       const rows = await shJsonLoose(`${GH} pr checks ${sq(n)} --repo ${sq(repo)} --json name,state,bucket,link`)
       return Array.isArray(rows) ? rows : []
@@ -1183,9 +1633,8 @@ function PrDetail({ repo, number, onBack }) {
   })
 
   const d = headerQ.data
-  const [owner, name] = String(repo || '').split('/')
-  if (headerQ.isLoading) return jsx('div', { className: 'flex justify-center p-8', children: jsx(GlyphSpinner, {}) })
-  if (headerQ.isError) return jsxs('div', { className: 'p-3', children: [jsx(Button, { variant: 'ghost', size: 'sm', onClick: onBack, children: '← Back' }), jsx('div', { className: 'mt-3 text-xs text-(--ui-red)', children: String(headerQ.error?.message || headerQ.error) })] })
+  if (headerQ.isLoading) return jsx(DetailLoading, { repo, number, onBack, backLabel: 'Back to pull requests' })
+  if (headerQ.isError) return jsx(DetailError, { repo, number, title: 'Could not load pull request', error: headerQ.error, onBack, backLabel: 'Back to pull requests' })
   if (!d) return null
 
   const url = d.html_url || `https://github.com/${repo}/pull/${d.number}`
@@ -1199,7 +1648,7 @@ function PrDetail({ repo, number, onBack }) {
   const timeline = [
     ...reviews.map((r, i) => ({ ts: r.submitted_at, el: jsx(CommentCard, { login: r.user, verb: 'reviewed', time: ago(r.submitted_at), timestamp: r.submitted_at, reviewState: r.state, body: r.body, permalink: r.html_url }, `r-${i}`) })),
     ...comments.map((c, i) => ({ ts: c.created_at, el: jsx(CommentCard, { login: c.user, verb: 'commented', time: ago(c.created_at), timestamp: c.created_at, body: c.body, permalink: c.html_url }, `c-${i}`) })),
-    ...threads.map((t, i) => ({ ts: t.root.created_at, el: jsxs('div', { className: 'space-y-2', children: [
+    ...threads.map((t, i) => ({ ts: t.root.created_at, el: jsxs('div', { className: 'gh-timeline', children: [
       jsx(CommentCard, { login: t.root.user, verb: 'commented on the diff', time: ago(t.root.created_at), timestamp: t.root.created_at, body: t.root.body, permalink: t.root.html_url, fileChip: inlineFileChip(t.root), hunk: t.root.diff_hunk || undefined }, `t-${i}-root`),
       ...t.replies.map((r, j) => jsx('div', { className: 'ml-4', children: jsx(CommentCard, { login: r.user, verb: 'replied', time: ago(r.created_at), timestamp: r.created_at, body: r.body, permalink: r.html_url, fileChip: inlineFileChip(r) }, `t-${i}-${j}`) })),
     ] }, `t-${i}`) })),
@@ -1208,118 +1657,56 @@ function PrDetail({ repo, number, onBack }) {
   return jsxs('div', {
     className: 'flex h-full min-h-0 flex-col',
     children: [
-      jsxs('div', {
-        className: 'shrink-0 border-b border-(--ui-stroke-secondary) bg-(--ui-bg-quaternary) px-3 py-2 flex items-center gap-1.5 text-xs text-(--ui-text-tertiary)',
+      jsx(DetailToolbar, { repo, number: d.number, url, onBack, backLabel: 'Back to pull requests' }),
+      jsxs(DetailSummary, {
+        title: d.title,
+        number: d.number,
         children: [
-          jsx(Button, { variant: 'ghost', size: 'sm', className: 'h-7 w-7 p-0 -ml-1', onClick: onBack, 'aria-label': 'Back to pull requests', children: jsx(Codicon, { name: 'chevron-left' }) }),
-          jsxs('span', { className: 'truncate', children: [jsx('span', { children: owner }), jsx('span', { className: 'mx-0.5 opacity-50', children: '/' }), jsx('span', { className: 'font-medium text-(--ui-text-primary)', children: name })] }),
-          jsx('span', { className: 'opacity-40', children: '·' }),
-          jsx('span', { className: 'font-mono', children: `#${d.number}` }),
-          jsxs('span', { className: 'ml-auto flex gap-0.5', children: [
-            jsx(Button, { variant: 'ghost', size: 'sm', className: 'h-7 w-7 p-0', onClick: () => pluginCtx?.os.writeClipboard(url), 'aria-label': 'Copy pull request URL', children: jsx(Codicon, { name: 'copy' }) }),
-            jsx(Button, { variant: 'ghost', size: 'sm', className: 'h-7 w-7 p-0', onClick: () => openExternal(url), 'aria-label': 'Open pull request on GitHub', children: jsx(Codicon, { name: 'link-external' }) }),
-          ] }),
-        ],
-      }),
-      jsxs('div', {
-        className: 'gh-detail-summary shrink-0 border-b border-(--ui-stroke-secondary) px-4 py-3.5 space-y-2.5',
-        children: [
-          jsxs('h1', { className: 'text-lg font-semibold leading-snug', children: [
-            jsx('span', { className: 'break-words', children: d.title }),
-            jsx('span', { className: 'ml-1.5 text-sm font-normal text-(--ui-text-quaternary)', children: `#${d.number}` }),
-          ] }),
-          jsxs('div', { className: 'flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-(--ui-text-tertiary)', children: [
+          jsxs('div', { className: 'gh-detail-meta text-[11px] text-(--ui-text-tertiary)', children: [
             jsx(StatePill, { d }),
-            jsx(Person, { login: d.user, size: 18 }),
-            jsx('span', { children: `${ago(d.created_at)} · ${d.head} → ${d.base}` }),
+            jsx(Person, { login: d.user, size: 16 }),
+            jsx('span', { children: ago(d.created_at) }),
+            jsx('span', { className: 'font-mono', children: `${d.head} → ${d.base}` }),
             jsxs('span', { children: [jsx(DiffCount, { add: d.additions, del: d.deletions }), jsx('span', { children: ` · ${d.changed_files ?? 0} files` })] }),
-            prStateKey(d) === 'open' && !d.draft ? jsx(MergeControl, { repo, number: d.number, mergeableState: d.mergeable_state }) : null,
+            d.comments ? jsx(Badge, { variant: 'secondary', className: 'h-5 text-[10px]', children: `${d.comments} comments` }) : null,
           ] }),
+          prStateKey(d) === 'open' && !d.draft
+            ? jsx(MergeControl, { repo, number: d.number, mergeableState: d.mergeable_state })
+            : null,
         ],
       }),
       jsx('div', {
-        className: 'gh-detail-tabs shrink-0 border-b border-(--ui-stroke-secondary) px-2',
-        children: jsxs(Tabs, {
+        className: 'gh-detail-tabs shrink-0 border-b border-(--ui-stroke-secondary) px-3 py-2',
+        children: jsx(SegmentedControl, {
           value: page,
-          onValueChange: setPage,
-          children: [jsxs(TabsList, { className: 'h-8 bg-transparent p-0 gap-0', children: [
-            jsx(TabsTrigger, { value: 'conversation', className: 'text-xs h-8 px-2.5 rounded-none border-b-2 border-transparent gh-tab', children: 'Conversation' }),
-            jsx(TabsTrigger, { value: 'commits', className: 'text-xs h-8 px-2.5 rounded-none border-b-2 border-transparent gh-tab', children: 'Commits' }),
-            jsx(TabsTrigger, { value: 'checks', className: 'text-xs h-8 px-2.5 rounded-none border-b-2 border-transparent gh-tab', children: 'Checks' }),
-            jsx(TabsTrigger, { value: 'files', className: 'text-xs h-8 px-2.5 rounded-none border-b-2 border-transparent gh-tab', children: 'Files' }),
-          ] })],
+          onChange: setPage,
+          className: 'w-full',
+          options: [
+            { id: 'conversation', label: 'Conversation' },
+            { id: 'commits', label: 'Commits' },
+            { id: 'checks', label: 'Checks' },
+            { id: 'files', label: 'Files' },
+          ],
         }),
       }),
       jsx(ScrollArea, {
         className: 'flex-1 min-h-0',
         children:
           page === 'conversation'
-            ? jsxs('div', { className: 'p-3 space-y-3', children: [
+            ? jsxs('div', { className: 'gh-timeline p-3', children: [
                 jsx(CommentCard, { login: d.user, verb: 'described this', body: d.body, timestamp: d.created_at, permalink: url, size: 20 }),
+                jsx(ChecksView, { checks, loading: checksQ.isLoading, error: checksQ.isError ? checksQ.error : null, onRetry: () => checksQ.refetch(), compact: true }),
                 convQ.isLoading
-                  ? jsx('div', { className: 'flex justify-center p-4', children: jsx(GlyphSpinner, {}) })
+                  ? jsx(Skeleton, { className: 'h-24 w-full rounded-md' })
                   : timeline.length
                     ? jsxs(Fragment, { children: timeline })
                     : jsx('div', { className: 'text-[11px] text-(--ui-text-quaternary)', children: 'No comments yet.' }),
               ] })
             : page === 'commits'
-              ? jsxs('div', { className: 'gh-tab-panel space-y-2', children: [
-                  jsxs('div', { className: 'flex items-baseline justify-between gap-2', children: [
-                    jsx('span', { className: 'gh-section-meta', children: commitsQ.isLoading || !commits.length ? 'Commits' : `${commits.length} commits` }),
-                    commits.length ? jsx('span', { className: 'text-[10px] font-mono text-(--ui-text-quaternary)', children: `${d.head.slice(0, 7)} → ${d.base}` }) : null,
-                  ] }),
-                  commitsQ.isLoading
-                    ? jsx('div', { className: 'flex justify-center p-8', children: jsx(GlyphSpinner, {}) })
-                    : !commits.length
-                      ? jsx(EmptyState, { title: 'No commits' })
-                      : jsx('div', { className: 'gh-commit-list', children:
-                          commits.map(c => jsxs('div', { className: 'gh-commit-row', children: [
-                            jsx('span', { className: 'rounded bg-(--ui-bg-editor) px-1.5 py-0.5 font-mono text-[10px] text-(--ui-text-secondary)', children: c.sha }),
-                            jsxs('span', { className: 'min-w-0 flex-1', children: [
-                              jsx('span', { className: 'block text-xs font-medium break-words leading-5', children: c.msg }),
-                              jsx('span', { className: 'block text-[10px] text-(--ui-text-tertiary)', children: c.author }),
-                            ] }),
-                          ] }, c.sha)),
-                        }),
-                ] })
+              ? jsx('div', { className: 'p-3', children: jsx(CommitsView, { repo, commits, loading: commitsQ.isLoading, error: commitsQ.isError ? commitsQ.error : null, onRetry: () => commitsQ.refetch() }) })
               : page === 'checks'
-                ? jsxs('div', { className: 'gh-tab-panel space-y-2.5', children: [
-                    jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [
-                      jsx('span', { className: 'gh-section-meta', children: checksQ.isLoading || !checks.length ? 'Checks' : `${checks.filter(c => c.bucket === 'pass').length}/${checks.length} passing` }),
-                      checks.length ? jsxs('span', { className: 'ml-auto flex items-center gap-1.5 text-[10px] text-(--ui-text-quaternary)', children: [
-                        jsx('span', { className: 'gh-check-dot', style: { background: 'var(--ui-green)' } }), 'pass',
-                        jsx('span', { className: 'gh-check-dot', style: { background: 'var(--ui-red)' } }), 'fail',
-                        jsx('span', { className: 'gh-check-dot', style: { background: 'var(--ui-yellow)' } }), 'pending',
-                      ] }) : null,
-                    ] }),
-                    checksQ.isLoading
-                      ? jsx('div', { className: 'flex justify-center p-8', children: jsx(GlyphSpinner, {}) })
-                      : checksQ.isError
-                        ? jsx('div', { className: 'p-3 text-xs text-(--ui-red)', children: String(checksQ.error?.message || checksQ.error) })
-                        : !checks.length
-                          ? jsx(EmptyState, { title: 'No checks', description: 'Nothing reported for this PR.' })
-                          : jsx('div', { className: 'gh-checks-list', children:
-                              checks.map(c => jsxs('button', {
-                                type: 'button',
-                                onClick: () => c.link && openExternal(c.link),
-                                className: 'gh-check-row w-full text-left',
-                                children: [
-                                  jsx('span', { className: 'gh-check-dot', style: { background: c.bucket === 'pass' ? 'var(--ui-green)' : c.bucket === 'fail' ? 'var(--ui-red)' : c.bucket === 'pending' ? 'var(--ui-yellow)' : 'var(--ui-text-quaternary)' } }),
-                                  jsxs('span', { className: 'min-w-0 flex-1', children: [
-                                    jsx('span', { className: 'block text-xs font-medium break-words leading-5', children: c.name }),
-                                    jsx('span', { className: 'block text-[10px] text-(--ui-text-quaternary)', children: c.state || (c.link ? 'Open on GitHub' : '') }),
-                                  ] }),
-                                  c.link ? jsx(Codicon, { name: 'link-external', className: 'ml-auto shrink-0 text-(--ui-text-quaternary)' }) : null,
-                                ],
-                              }, c.name + c.state)),
-                            }),
-                  ] })
-                : jsx('div', { className: 'gh-tab-panel p-2 space-y-2', children: filesQ.isLoading
-                    ? jsx('div', { className: 'flex justify-center p-8', children: jsx(GlyphSpinner, {}) })
-                    : !files.length
-                      ? jsx(EmptyState, { title: 'No files changed' })
-                      : files.map(f => jsx(FileDiffBlock, { file: f }, f.filename))
-                  }),
+                ? jsx('div', { className: 'p-3', children: jsx(ChecksView, { checks, loading: checksQ.isLoading, error: checksQ.isError ? checksQ.error : null, onRetry: () => checksQ.refetch() }) })
+                : jsx('div', { className: 'p-3', children: jsx(FilesView, { files, loading: filesQ.isLoading, error: filesQ.isError ? filesQ.error : null, onRetry: () => filesQ.refetch() }) }),
       }),
     ],
   })
@@ -1334,39 +1721,38 @@ function IssueDetail({ repo, number, onBack }) {
     refetchInterval: 30_000,
   })
   const d = q.data
-  if (q.isLoading) return jsx('div', { className: 'flex justify-center p-8', children: jsx(GlyphSpinner, {}) })
-  if (q.isError) return jsxs('div', { className: 'p-3', children: [jsx(Button, { variant: 'ghost', size: 'sm', onClick: onBack, children: '← Back' }), jsx('div', { className: 'mt-3 text-xs text-(--ui-red)', children: String(q.error?.message || q.error) })] })
+  if (q.isLoading) return jsx(DetailLoading, { repo, number, onBack, backLabel: 'Back to issues' })
+  if (q.isError) return jsx(DetailError, { repo, number, title: 'Could not load issue', error: q.error, onBack, backLabel: 'Back to issues' })
   if (!d) return null
-  return jsxs(ScrollArea, {
-    className: 'h-full',
+  return jsxs('div', {
+    className: 'flex h-full min-h-0 flex-col',
     children: [
-      jsxs('div', {
-        className: 'sticky top-0 z-10 bg-(--ui-bg-editor) border-b border-(--ui-stroke-secondary) px-2 py-1.5 flex items-center gap-1',
-        children: [
-          jsx(Button, { variant: 'ghost', size: 'sm', className: 'h-6 px-1.5 text-xs', onClick: onBack, children: '←' }),
-          jsx('span', { className: 'text-[10px] text-(--ui-text-quaternary) truncate', children: `${repo} #${d.number}` }),
-          jsx(Button, { size: 'sm', variant: 'outline', className: 'h-6 ml-auto text-[10px]', onClick: () => openExternal(d.url), children: 'GitHub' }),
-        ],
+      jsx(DetailToolbar, { repo, number: d.number, url: d.url, onBack, backLabel: 'Back to issues' }),
+      jsx(DetailSummary, {
+        title: d.title,
+        number: d.number,
+        children: jsxs('div', { className: 'gh-detail-meta text-[11px] text-(--ui-text-tertiary)', children: [
+          jsx(StatePill, { d }),
+          jsx(Person, { login: d.author?.login, size: 16 }),
+          jsx('span', { children: ago(d.createdAt) }),
+          jsx(Badge, { variant: 'secondary', className: 'h-5 text-[10px]', children: `${(d.comments || []).length} comments` }),
+          ...(Array.isArray(d.labels) ? d.labels.map(label => jsx(LabelChip, { label }, label.name || label.id)) : []),
+        ] }),
       }),
-      jsxs('div', {
-        className: 'p-3 space-y-3',
-        children: [
-          jsxs('div', { className: 'flex gap-2 items-center flex-wrap', children: [
-            jsx(Avatar, { login: d.author?.login, size: 22 }),
-            jsx(StateDot, { state: d.state }),
-            jsx('h2', { className: 'text-sm font-semibold', children: d.title }),
-            Array.isArray(d.labels) && d.labels.length
-              ? jsx('span', { className: 'inline-flex flex-wrap gap-1 items-center ml-auto', children: d.labels.map(l => jsx(LabelChip, { label: l }, l.name || l.id)) })
-              : null,
-          ] }),
+      jsx(ScrollArea, {
+        className: 'min-h-0 flex-1',
+        children: jsxs('div', { className: 'space-y-4 p-3', children: [
           jsx(CommentCard, { login: d.author?.login, verb: 'described this', body: d.body, timestamp: d.createdAt, permalink: d.url, size: 20 }),
-          jsxs('div', { children: [
-            jsx('div', { className: 'text-[10px] font-medium text-(--ui-text-secondary) mb-1', children: `Comments (${(d.comments || []).length})` }),
+          jsxs('section', { className: 'space-y-2', children: [
+            jsxs('div', { className: 'flex items-center gap-2 px-0.5', children: [
+              jsx('h2', { className: 'text-xs font-semibold text-(--ui-text-secondary)', children: 'Comments' }),
+              jsx(Badge, { variant: 'secondary', className: 'h-5 min-w-5 justify-center text-[10px]', children: String((d.comments || []).length) }),
+            ] }),
             (d.comments || []).length
-              ? jsx('div', { className: 'space-y-2', children: d.comments.map(c => jsx(CommentCard, { login: c.author?.login, verb: 'commented', time: ago(c.createdAt), timestamp: c.createdAt, body: c.body, permalink: c.url, size: 16 }, c.id || c.url)) })
-              : jsx('div', { className: 'text-[10px] text-(--ui-text-quaternary)', children: 'No comments.' }),
+              ? jsx('div', { className: 'gh-timeline', children: d.comments.map(c => jsx(CommentCard, { login: c.author?.login, verb: 'commented', time: ago(c.createdAt), timestamp: c.createdAt, body: c.body, permalink: c.url, size: 16 }, c.id || c.url)) })
+              : jsx('div', { className: 'rounded-md border border-(--ui-stroke-secondary) px-3 py-4 text-center text-xs text-(--ui-text-quaternary)', children: 'No comments yet.' }),
           ] }),
-        ],
+        ] }),
       }),
     ],
   })
@@ -1401,8 +1787,7 @@ function GitHubPane() {
   const reposQ = useRepos()
   const repo = useValue($repo)
   const tab = useValue($tab)
-  const prState = useValue($prState)
-  const issueState = useValue($issueState)
+  const query = useValue($listQuery)
   const selPr = useValue($selPr)
   const selIssue = useValue($selIssue)
   const cwd = useValue(host.state.cwd)
@@ -1424,7 +1809,7 @@ function GitHubPane() {
     }
   }, [reposQ.data, gitQ.data, repo])
   useEffect(() => { if (repo) pluginCtx?.storage.set('repo', repo) }, [repo])
-  useEffect(() => { $selPr.set(null); $selIssue.set(null) }, [repo])
+  useEffect(() => { $selPr.set(null); $selIssue.set(null); $listQuery.set('') }, [repo])
 
   const showPr = tab === 'prs' && selPr != null
   const showIssue = tab === 'issues' && selIssue != null
@@ -1433,14 +1818,11 @@ function GitHubPane() {
   if (showIssue) return jsx(IssueDetail, { repo, number: selIssue, onBack: () => $selIssue.set(null) })
 
   if (reposQ.isError) {
-    return jsxs('div', {
-      className: 'flex h-full flex-col p-4 gap-3',
-      children: [
-        jsx('div', { className: 'text-sm font-medium', children: 'GitHub' }),
-        jsx('div', { className: 'rounded border border-(--ui-stroke-secondary) p-3 text-xs text-(--ui-red)', children: `gh failed: ${String(reposQ.error?.message || reposQ.error)}` }),
-        jsx(Button, { variant: 'outline', size: 'sm', onClick: () => reposQ.refetch(), children: 'Retry' }),
-      ],
-    })
+    return jsx('div', { className: 'p-6', children: jsx(ErrorState, {
+      title: 'Could not load repositories',
+      description: String(reposQ.error?.message || reposQ.error),
+      children: jsx(Button, { variant: 'outline', size: 'sm', onClick: () => reposQ.refetch(), children: 'Retry' }),
+    }) })
   }
 
   return jsxs('div', {
@@ -1448,48 +1830,36 @@ function GitHubPane() {
     children: [
       jsx(SessionPrBanner, {}),
       jsxs('div', {
-        className: 'gh-shell-header shrink-0 p-3 space-y-2.5',
+        className: 'gh-shell-header shrink-0 p-3',
         children: [
           jsxs('div', {
-            className: 'flex items-center gap-1.5',
+            className: 'flex items-center gap-2',
             children: [
-              jsx(Codicon, { name: 'github', className: 'text-(--ui-text-secondary)' }),
-              jsx('span', { className: 'font-semibold text-sm tracking-tight', children: 'GitHub' }),
+              reposQ.isLoading
+                ? jsx(Skeleton, { className: 'h-8 flex-1 rounded-md' })
+                : jsx('div', { className: 'min-w-0 flex-1', children: jsx(RepoPicker, { repos: reposQ.data || [], value: repo, onChange: v => $repo.set(v) }) }),
               jsx(Button, { variant: 'ghost', size: 'sm', className: 'h-7 w-7 p-0 ml-auto', onClick: () => queryClient.invalidateQueries({ queryKey: [ID] }), 'aria-label': 'Refresh GitHub data', children: jsx(icons.RefreshCw, { className: 'size-3' }) }),
             ],
           }),
-          reposQ.isLoading
-            ? jsx('div', { className: 'text-[10px] text-(--ui-text-tertiary)', children: 'loading repos…' })
-            : jsx(RepoPicker, { repos: reposQ.data || [], value: repo, onChange: v => $repo.set(v) }),
+          jsx(Separator, { className: 'my-3' }),
+          jsx(SegmentedControl, {
+            value: tab,
+            onChange: v => $tab.set(v),
+            className: 'gh-list-tabs w-full',
+            options: [{ id: 'prs', label: 'PRs' }, { id: 'issues', label: 'Issues' }],
+          }),
           jsxs('div', {
-            className: 'flex gap-2 items-center',
+            className: 'mt-3 flex items-center gap-2',
             children: [
-              jsx(Tabs, {
-                value: tab,
-                onValueChange: v => $tab.set(v),
-                children: jsxs(TabsList, { className: 'h-8', children: [
-                  jsx(TabsTrigger, { value: 'prs', className: 'text-xs h-7 px-3', children: 'Pull requests' }),
-                  jsx(TabsTrigger, { value: 'issues', className: 'text-xs h-7 px-3', children: 'Issues' }),
-                ] }),
+              jsx(SearchField, {
+                'aria-label': `Search ${tab === 'prs' ? 'pull requests' : 'issues'}`,
+                containerClassName: 'min-w-0 flex-1',
+                inputClassName: 'flex-1',
+                placeholder: `Search ${tab === 'prs' ? 'pull requests' : 'issues'}`,
+                value: query,
+                onChange: value => $listQuery.set(value),
               }),
-              tab === 'prs'
-                ? jsxs(Select, { value: prState, onValueChange: v => $prState.set(v), children: [
-                    jsx(SelectTrigger, { className: 'h-8 w-24 text-xs', children: jsx(SelectValue, {}) }),
-                    jsxs(SelectContent, { children: [
-                      jsx(SelectItem, { value: 'open', children: 'Open' }),
-                      jsx(SelectItem, { value: 'closed', children: 'Closed' }),
-                      jsx(SelectItem, { value: 'merged', children: 'Merged' }),
-                      jsx(SelectItem, { value: 'all', children: 'All' }),
-                    ] }),
-                  ] })
-                : jsxs(Select, { value: issueState, onValueChange: v => $issueState.set(v), children: [
-                    jsx(SelectTrigger, { className: 'h-8 w-24 text-xs', children: jsx(SelectValue, {}) }),
-                    jsxs(SelectContent, { children: [
-                      jsx(SelectItem, { value: 'open', children: 'Open' }),
-                      jsx(SelectItem, { value: 'closed', children: 'Closed' }),
-                      jsx(SelectItem, { value: 'all', children: 'All' }),
-                    ] }),
-                  ] }),
+              jsx(StateSelect, { kind: tab }),
             ],
           }),
         ],
@@ -1497,8 +1867,104 @@ function GitHubPane() {
       jsx('div', {
         className: 'flex-1 min-h-0',
         children: tab === 'prs'
-          ? jsx(PrList, { repo, onOpen: n => $selPr.set(n) })
-          : jsx(IssueList, { repo, onOpen: n => $selIssue.set(n) }),
+          ? jsx(PrList, { repo, query, onOpen: n => $selPr.set(n) })
+          : jsx(IssueList, { repo, query, onOpen: n => $selIssue.set(n) }),
+      }),
+    ],
+  })
+}
+
+function GithubPage() {
+  const reposQ = useRepos()
+  const repo = useValue($repo)
+  const tab = useValue($tab)
+  const query = useValue($listQuery)
+  const selPr = useValue($selPr)
+  const selIssue = useValue($selIssue)
+  const cwd = useValue(host.state.cwd)
+  const gitQ = useSessionGit(cwd)
+
+  useEffect(() => {
+    const sessionRepo = gitQ.data?.repo
+    if (sessionRepo) {
+      if (sessionRepo !== lastAutoRepo) {
+        lastAutoRepo = sessionRepo
+        if (sessionRepo !== repo) $repo.set(sessionRepo)
+      }
+    } else if (gitQ.data) {
+      lastAutoRepo = null
+    } else if (!repo && reposQ.data?.length) {
+      const saved = pluginCtx?.storage.get('repo')
+      $repo.set(saved && reposQ.data.includes(saved) ? saved : reposQ.data[0])
+    }
+  }, [reposQ.data, gitQ.data, repo])
+  useEffect(() => { if (repo) pluginCtx?.storage.set('repo', repo) }, [repo])
+  useEffect(() => { $selPr.set(null); $selIssue.set(null); $listQuery.set('') }, [repo])
+
+  const showPr = tab === 'prs' && selPr != null
+  const showIssue = tab === 'issues' && selIssue != null
+  if (showPr) return jsx(PrDetail, { repo, number: selPr, onBack: () => $selPr.set(null) })
+  if (showIssue) return jsx(IssueDetail, { repo, number: selIssue, onBack: () => $selIssue.set(null) })
+
+  if (reposQ.isError) {
+    return jsx('div', { className: 'mx-auto w-full max-w-[1020px] p-6', children: jsx(ErrorState, {
+      title: 'Could not load repositories',
+      description: String(reposQ.error?.message || reposQ.error),
+      children: jsx(Button, { variant: 'outline', size: 'sm', onClick: () => reposQ.refetch(), children: 'Retry' }),
+    }) })
+  }
+
+  return jsxs('div', {
+    className: 'flex h-full min-h-0 flex-col',
+    children: [
+      jsxs('div', {
+        className: 'shrink-0 border-b border-(--ui-stroke-secondary) bg-(--ui-editor-surface-background)',
+        children: [
+          jsx(SessionPrBanner, {}),
+          jsxs('div', {
+            className: 'mx-auto flex w-full max-w-[1020px] flex-col gap-3 px-4 py-3 sm:px-6',
+            children: [
+              jsxs('div', {
+                className: 'flex items-center gap-2',
+                children: [
+                  jsxs('span', { className: 'flex items-center gap-2 text-sm font-semibold', children: [jsx(Codicon, { name: 'github' }), 'GitHub'] }),
+                  jsx('span', { className: 'text-xs text-(--ui-text-quaternary)', children: repo || '—' }),
+                  jsx(Button, { variant: 'ghost', size: 'sm', className: 'ml-auto h-7 w-7 p-0', onClick: () => queryClient.invalidateQueries({ queryKey: [ID] }), 'aria-label': 'Refresh', children: jsx(icons.RefreshCw, { className: 'size-3' }) }),
+                  jsx(Button, { variant: 'ghost', size: 'sm', className: 'h-7 px-2 text-xs', onClick: openGithubPane, children: 'Open pane' }),
+                ],
+              }),
+              reposQ.isLoading
+                ? jsx(Skeleton, { className: 'h-8 w-full max-w-[420px] rounded-md' })
+                : jsx('div', { className: 'max-w-[420px]', children: jsx(RepoPicker, { repos: reposQ.data || [], value: repo, onChange: v => $repo.set(v) }) }),
+              jsx(SegmentedControl, {
+                value: tab,
+                onChange: v => $tab.set(v),
+                className: 'gh-list-tabs w-full max-w-[360px]',
+                options: [{ id: 'prs', label: 'PRs' }, { id: 'issues', label: 'Issues' }],
+              }),
+              jsxs('div', {
+                className: 'flex items-center gap-2',
+                children: [
+                  jsx(SearchField, {
+                    'aria-label': `Search ${tab === 'prs' ? 'pull requests' : 'issues'}`,
+                    containerClassName: 'min-w-0 flex-1',
+                    inputClassName: 'flex-1',
+                    placeholder: 'Filter by title, #number, author, branch or label',
+                    value: query,
+                    onChange: value => $listQuery.set(value),
+                  }),
+                  jsx(StateSelect, { kind: tab }),
+                ],
+              }),
+            ],
+          }),
+        ],
+      }),
+      jsx('div', {
+        className: 'mx-auto flex w-full max-w-[1020px] flex-1 min-h-0 flex-col px-2 py-2 sm:px-6 sm:py-3',
+        children: tab === 'prs'
+          ? jsx(PrList, { repo, query, onOpen: n => $selPr.set(n) })
+          : jsx(IssueList, { repo, query, onOpen: n => $selIssue.set(n) }),
       }),
     ],
   })
@@ -1512,24 +1978,52 @@ export default {
     const saved = ctx.storage.get('repo')
     if (saved) $repo.set(saved)
 
+    const paneWrap = () => jsxs('div', { className: 'github-prs-pane h-full min-h-0 min-w-0 max-w-full overflow-hidden', children: [
+      jsx('style', { children: PANE_WRAP_CSS }),
+      jsxs('div', { className: 'gh-narrow-only h-full flex-col items-center justify-center gap-2 px-2 text-center text-(--ui-text-quaternary)', children: [
+        jsx(Codicon, { name: 'github', className: 'text-base' }),
+        jsx('span', { className: 'text-[10px] leading-4', children: 'Widen pane' }),
+      ] }),
+      jsx('div', { className: 'gh-pane-content h-full min-h-0', children: jsx(GitHubPane, {}) }),
+    ] })
+    const pageShell = () => jsxs('div', { className: 'github-prs-pane h-full min-h-0 min-w-0 max-w-full overflow-hidden bg-(--ui-editor-surface-background)', children: [jsx('style', { children: PANE_WRAP_CSS }), jsx(GithubPage, {})] })
+
     ctx.register({
       id: 'pane',
       area: PANES_AREA,
       title: 'GitHub',
-      // hermes-bots pattern: own tile on the workspace's right edge.
-      // placement:'right' joins the collapsible files/review rail and stays hidden.
       data: {
         placement: 'main',
         dock: { pane: 'workspace', pos: 'right' },
         width: '440px',
         revealAliases: [PANE_ID, 'github'],
       },
-      render: () => jsxs('div', { className: 'github-prs-pane h-full min-h-0 min-w-0 max-w-full overflow-hidden', children: [jsx('style', { children: PANE_WRAP_CSS }), jsx(GitHubPane, {})] }),
+      render: paneWrap,
+    })
+    // Dedicated full page (workspace route) — does NOT replace the pane.
+    // Sidebar orders on `order` within SIDEBAR_NAV_AREA; this keeps GitHub
+    // near the top. Falls back to literals if the SDK build omits the exports.
+    ctx.register({
+      id: 'route-github',
+      area: ROUTES_AREA_LIT,
+      data: { path: GITHUB_ROUTE },
+      render: pageShell,
+    })
+    ctx.register({
+      id: 'nav-github',
+      area: SIDEBAR_NAV_LIT,
+      order: 12,
+      data: { path: GITHUB_ROUTE, label: 'GitHub', codicon: 'github' },
     })
     ctx.register({
       id: 'palette',
       area: PALETTE_AREA,
       data: { id: 'github-prs.open', label: 'Open GitHub pane', keywords: ['github', 'pr', 'issue', 'pull request'], run: openGithubPane },
+    })
+    ctx.register({
+      id: 'palette-page',
+      area: PALETTE_AREA,
+      data: { id: 'github-prs.open-page', label: 'GitHub: Open page', keywords: ['github', 'page', 'pr', 'issue'], run: openGithubPage },
     })
     ctx.register({ id: 'titlebar-github', area: TITLEBAR_AREAS.right, order: 20, render: () => jsx(TitlebarGithubButton, {}) })
     ctx.register({ id: 'titlebar-session-pr', area: TITLEBAR_AREAS.center, order: 10, render: () => jsx(SessionPrChip, {}) })

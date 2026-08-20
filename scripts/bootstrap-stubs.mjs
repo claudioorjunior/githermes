@@ -28,9 +28,16 @@ export const queryClient = { invalidateQueries: () => {} }
 export const Button = () => null
 export const Input = () => null
 export const Badge = () => null
+export const CopyButton = () => null
+export const StatusDot = () => null
 export const ScrollArea = () => null
 export const EmptyState = () => null
+export const ErrorState = () => null
 export const GlyphSpinner = () => null
+export const Skeleton = () => null
+export const SearchField = () => null
+export const SegmentedControl = () => null
+export const Separator = () => null
 export const Tabs = () => null
 export const TabsList = () => null
 export const TabsTrigger = () => null
@@ -46,6 +53,8 @@ export const relativeTime = () => ''
 export const PALETTE_AREA = 'palette'
 export const TITLEBAR_AREAS = 'titlebar'
 export const PANES_AREA = 'panes'
+export const ROUTES_AREA = 'routes'
+export const SIDEBAR_NAV_AREA = 'sidebar.nav'
 export const Tip = () => null
 `,
   'node_modules/react/package.json': {

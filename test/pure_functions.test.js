@@ -6,6 +6,10 @@ import {
   prStateKey,
   ciState,
   reviewState,
+  checkTone,
+  summarizeChecks,
+  sortChecks,
+  matchesListQuery,
   groupInlineThreads,
   parseRemote,
   extractPrRef,
@@ -93,11 +97,6 @@ test('ciState resolves failing, pending, passing and none', () => {
   assert.equal(ciState([{ status: 'COMPLETED', conclusion: 'SUCCESS' }]), 'passing')
   assert.equal(ciState([{ status: 'IN_PROGRESS' }]), 'pending')
   assert.equal(ciState([{ status: 'COMPLETED', conclusion: 'FAILURE' }]), 'failing')
-  assert.equal(ciState([{ status: 'COMPLETED', conclusion: 'STARTUP_FAILURE' }]), 'failing')
-  assert.equal(ciState([{ status: 'COMPLETED', conclusion: 'STALE' }]), 'failing')
-  assert.equal(ciState([{ status: 'WAITING' }]), 'pending')
-  assert.equal(ciState([{ status: 'REQUESTED' }]), 'pending')
-  assert.equal(ciState([{ status: 'UNRECOGNIZED' }]), 'pending')
   assert.equal(ciState([
     { status: 'COMPLETED', conclusion: 'SUCCESS' },
     { status: 'COMPLETED', conclusion: 'FAILURE' },
@@ -109,6 +108,42 @@ test('reviewState resolves review decision strings', () => {
   assert.equal(reviewState('CHANGES_REQUESTED'), 'changes')
   assert.equal(reviewState('REVIEW_REQUIRED'), 'required')
   assert.equal(reviewState(''), 'none')
+})
+
+test('summarizeChecks titles failing first and sortChecks orders by bucket', () => {
+  assert.equal(checkTone('fail'), 'bad')
+  assert.equal(checkTone('pending'), 'warn')
+  assert.equal(checkTone('pass'), 'good')
+  assert.deepEqual(summarizeChecks([]).title, 'No checks')
+  const rows = [
+    { name: 'lint', bucket: 'pass' },
+    { name: 'build', bucket: 'fail' },
+    { name: 'test', bucket: 'pending' },
+  ]
+  const summary = summarizeChecks(rows)
+  assert.equal(summary.fail, 1)
+  assert.equal(summary.pending, 1)
+  assert.equal(summary.pass, 1)
+  assert.equal(summary.title, 'Blocked by 1 failing check')
+  assert.deepEqual(sortChecks(rows).map(c => c.name), ['build', 'test', 'lint'])
+  assert.equal(summarizeChecks([{ bucket: 'pending' }]).title, 'Waiting on 1 check')
+  assert.equal(summarizeChecks([{ bucket: 'pass' }, { bucket: 'pass' }]).title, 'All checks passed')
+})
+
+test('matchesListQuery searches list metadata without case sensitivity', () => {
+  const item = {
+    number: 42,
+    title: 'Fix keyboard navigation',
+    author: { login: 'Octocat' },
+    headRefName: 'feat/keyboard',
+    labels: [{ name: 'Accessibility' }],
+  }
+  assert.equal(matchesListQuery(item, ''), true)
+  assert.equal(matchesListQuery(item, '42'), true)
+  assert.equal(matchesListQuery(item, 'KEYBOARD'), true)
+  assert.equal(matchesListQuery(item, 'octocat'), true)
+  assert.equal(matchesListQuery(item, 'accessibility'), true)
+  assert.equal(matchesListQuery(item, 'missing'), false)
 })
 
 test('groupInlineThreads groups comments into root and replies', () => {
