@@ -650,9 +650,10 @@ function MergeControl({ repo, number }) {
     try {
       const flag = method === 'squash' ? '--squash' : method === 'rebase' ? '--rebase' : '--merge'
       const del = deleteBranch ? ' --delete-branch' : ''
-      // --yes: gh pede confirmação interativa (branch protection, merge queue);
-      // sem TTY no shell.exec isso penduraria ou falharia.
-      await sh(`${GH} pr merge ${sq(String(number))} --repo ${sq(repo)} ${flag}${del} --yes`)
+      // gh pr merge prompts interactively (branch protection, merge queue);
+      // shell.exec has no TTY so it would hang. gh has no --yes on this
+      // subcommand; GH_PROMPT_DISABLED=1 suppresses prompts for this call only.
+      await sh(`GH_PROMPT_DISABLED=1 ${GH} pr merge ${sq(String(number))} --repo ${sq(repo)} ${flag}${del}`)
       queryClient.invalidateQueries({ queryKey: [ID, 'pr-page', repo, String(number)] })
       queryClient.invalidateQueries({ queryKey: [ID, 'prs', repo] })
       queryClient.invalidateQueries({ queryKey: [ID, 'session-git'] })
