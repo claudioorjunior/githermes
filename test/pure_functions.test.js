@@ -97,6 +97,11 @@ test('ciState resolves failing, pending, passing and none', () => {
   assert.equal(ciState([{ status: 'COMPLETED', conclusion: 'SUCCESS' }]), 'passing')
   assert.equal(ciState([{ status: 'IN_PROGRESS' }]), 'pending')
   assert.equal(ciState([{ status: 'COMPLETED', conclusion: 'FAILURE' }]), 'failing')
+  assert.equal(ciState([{ status: 'COMPLETED', conclusion: 'STARTUP_FAILURE' }]), 'failing')
+  assert.equal(ciState([{ status: 'COMPLETED', conclusion: 'STALE' }]), 'failing')
+  assert.equal(ciState([{ status: 'WAITING' }]), 'pending')
+  assert.equal(ciState([{ status: 'REQUESTED' }]), 'pending')
+  assert.equal(ciState([{ status: 'COMPLETED', conclusion: 'UNKNOWN' }]), 'pending')
   assert.equal(ciState([
     { status: 'COMPLETED', conclusion: 'SUCCESS' },
     { status: 'COMPLETED', conclusion: 'FAILURE' },

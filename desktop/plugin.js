@@ -1642,7 +1642,7 @@ function PrDetail({ repo, number, onBack }) {
   const commitsQ = useQuery({
     queryKey: [ID, 'pr-commits', repo, n],
     enabled: !!repo && !!number && page === 'commits',
-    queryFn: () => ghApi(repo, `pulls/${n}/commits`, '[.[:30][]|{sha:.sha[0:7],full:.sha,msg:(.commit.message|sub("\\n.*";"")),author:(.commit.author.name//.author.login//"—"),date:(.commit.author.date//"")}]'),
+    queryFn: () => ghApiBig(repo, `pulls/${n}/commits`, '[.[:30][]|{sha:.sha[0:7],full:.sha,msg:(.commit.message|sub("\\n.*";"")),author:(.commit.author.name//.author.login//"—"),date:(.commit.author.date//"")}]'),
     staleTime: 15_000,
     refetchInterval: 30_000,
   })
