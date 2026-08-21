@@ -859,10 +859,13 @@ function FileStatusBadge({ status }) {
 function FileDiffBlock({ file }) {
   const rows = parsePatch(file.patch)
   const lineCount = rows.length
-  const defaultOpen = Boolean(file.patch && lineCount < 150)
+  // Own open state locally (CommitRow pattern): a computed `open` prop would
+  // snap the panel back on every parent re-render (#22).
+  const [open, setOpen] = useState(Boolean(file.patch && lineCount < 150))
 
   return jsxs('details', {
-    open: defaultOpen,
+    open,
+    onToggle: e => setOpen(e.currentTarget.open),
     className: 'group text-xs',
     children: [
       jsxs('summary', {
@@ -1014,6 +1017,9 @@ function CommitRow({ repo, commit }) {
 }
 
 function ChecksView({ checks, loading, error, onRetry, compact = false }) {
+  // Local open state (CommitRow pattern, #22): the computed default would
+  // re-assert itself and snap the panel closed on every parent re-render.
+  const [openOverride, setOpenOverride] = useState(null)
   if (loading) return compact ? jsx(Skeleton, { className: 'h-9 w-full rounded-md' }) : jsx(ListSkeleton, {})
   if (error) return compact ? null : jsx(ListErrorState, { title: 'Could not load checks', error, onRetry })
   if (!checks.length) return compact ? null : jsx(EmptyState, { title: 'No checks', description: 'Nothing reported for this PR.' })
@@ -1047,8 +1053,10 @@ function ChecksView({ checks, loading, error, onRetry, compact = false }) {
     ],
   }, `${c.name}:${c.state}`)) })
   if (compact) {
+    const defaultOpen = summary.fail > 0 || summary.cancel > 0 || summary.other > 0
     return jsxs('details', {
-      open: summary.fail > 0 || summary.cancel > 0 || summary.other > 0,
+      open: openOverride ?? defaultOpen,
+      onToggle: e => setOpenOverride(e.currentTarget.open),
       className: 'rounded-md border border-(--ui-stroke-secondary) px-3 py-2',
       children: [
         jsx('summary', { className: 'cursor-pointer select-none', children: head }),
