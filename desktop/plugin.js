@@ -1435,12 +1435,32 @@ function MdBlocksView({ blocks, keyPrefix }) {
   })
 }
 
+// ponytail: fixed collapse thresholds; move to a setting if anyone asks.
+const BODY_MAX_LINES = 12
+const BODY_MAX_CHARS = 800
+export function isLongBody(text) {
+  const s = String(text || '')
+  if (!s) return false
+  return s.split('\n').length > BODY_MAX_LINES || s.length > BODY_MAX_CHARS
+}
+
 function MdBody({ text }) {
+  const [open, setOpen] = useState(false)
   if (!text) return jsx('span', { className: 'text-sm text-(--ui-text-quaternary) italic', children: 'No description.' })
-  return jsx('div', {
-    className: 'text-sm leading-6 break-words space-y-2',
-    children: jsx(MdBlocksView, { blocks: mdBlocks(text), keyPrefix: 'b' }),
-  })
+  const long = isLongBody(text)
+  const collapsed = long && !open
+  return jsxs('div', { className: 'text-sm leading-6 break-words space-y-2', children: [
+    jsx('div', {
+      className: collapsed ? 'max-h-72 overflow-hidden [mask-image:linear-gradient(to_bottom,black_55%,transparent_98%)]' : undefined,
+      children: jsx(MdBlocksView, { blocks: mdBlocks(text), keyPrefix: 'b' }),
+    }),
+    long ? jsx('button', {
+      type: 'button',
+      onClick: () => setOpen(o => !o),
+      className: 'mt-1 text-[11px] font-medium text-(--ui-accent) hover:underline',
+      children: open ? 'Show less' : 'Show more',
+    }) : null,
+  ] })
 }
 
 function ListSkeleton() {

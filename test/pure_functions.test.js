@@ -19,6 +19,7 @@ import {
   projectionBody,
   projectInlineComments,
   numericListQuery,
+  isLongBody,
 } from '../desktop/plugin.js'
 
 test('Issue #13: labelTextColor chooses high-contrast text color based on luminance', () => {
@@ -215,6 +216,14 @@ test('numericListQuery detects exact-number searches for server-side lookup', ()
   assert.equal(numericListQuery('#42x'), null)
   assert.equal(numericListQuery(''), null)
   assert.equal(numericListQuery(null), null)
+})
+
+test('isLongBody collapses comments over the line/char thresholds', () => {
+  assert.equal(isLongBody(Array.from({ length: 12 }, (_, i) => `line ${i}`).join('\n')), false)
+  assert.equal(isLongBody(Array.from({ length: 13 }, (_, i) => `line ${i}`).join('\n')), true)
+  assert.equal(isLongBody('x'.repeat(800)), false)
+  assert.equal(isLongBody('x'.repeat(801)), true)
+  assert.equal(isLongBody(''), false)
 })
 
 test('commentToChatText formats quote blocks for chat composer', () => {
