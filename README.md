@@ -42,6 +42,10 @@ hermes plugins install claudioorjunior/githermes --enable
 
 Or manually: drop this folder into `~/.hermes/plugins/githermes/` (unified package — the desktop half lives at `desktop/plugin.js`), or copy `desktop/plugin.js` to `~/.hermes/desktop-plugins/githermes/plugin.js` (standalone disk door). The app hot-reloads on save.
 
+### Upgrading from `github-prs`
+
+The plugin **id** changed (`github-prs` → `githermes`), so the old install must be removed first — delete the old folder (`~/.hermes/desktop-plugins/github-prs/` or `~/.hermes/plugins/github-prs/`), then install fresh. One-time cost: the saved repository in the picker resets (plugin storage is namespaced by id).
+
 ## Development notes
 
 - Disk plugins load **uncompiled**: UI is written with `jsx()`/`jsxs()` calls, no JSX syntax, no build step.
