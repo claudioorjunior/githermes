@@ -1103,7 +1103,7 @@ function MergeControl({ repo, number }) {
   if (!open) {
     return jsxs(Button, {
       size: 'sm',
-      className: 'h-5 px-2 text-[10px] gap-1 ml-auto border border-(--ui-purple)/40 bg-(--ui-purple)/10 text-(--ui-purple) hover:bg-(--ui-purple)/20',
+      className: 'h-5 px-2 text-[10px] gap-1 ml-auto bg-(--ui-purple) text-white hover:bg-(--ui-purple)/85',
       onClick: () => { setOpen(true); setError(null) },
       children: [
         jsx(Codicon, { name: 'git-merge' }),
