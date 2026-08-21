@@ -864,6 +864,7 @@ function FileDiffBlock({ file }) {
   const [open, setOpen] = useState(Boolean(file.patch && lineCount < 150))
 
   return jsxs('details', {
+    open,
     onToggle: e => setOpen(e.currentTarget.open),
     className: 'group text-xs',
     children: [
