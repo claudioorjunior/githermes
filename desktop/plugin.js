@@ -484,10 +484,26 @@ export function sortChecks(checks) {
   })
 }
 
+// Exact-number search (`#42` or `42`) beyond the fetched page: look the item
+// up server-side instead of filtering the 30-row list. Non-numeric queries
+// keep the cheap client-side filter — `gh search` would hit different indexes.
+// ponytail: one extra gh call only when the list misses; add a search-index
+// query when free-text search needs to cover old items too.
+export function numericListQuery(query) {
+  const raw = String(query || '').trim()
+  const q = raw.startsWith('#') ? raw.slice(1).trim() : raw
+  return /^\d+$/.test(q) ? Number(q) : null
+}
+
 export function matchesListQuery(item, query) {
-  const raw = String(query || '').trim().toLowerCase()
+  const raw = String(query || '').trim()
   if (!raw) return true
-  const q = raw.startsWith('#') ? raw.slice(1).trimStart() : raw
+  // Codex P2: #42 must not match #142 — exact number before substring
+  if (raw.startsWith('#')) {
+    const n = numericListQuery(raw)
+    if (n != null) return item?.number === n
+  }
+  const q = raw.startsWith('#') ? raw.slice(1).trimStart().toLowerCase() : raw.toLowerCase()
   if (!q) return true
   return [
     item?.number,
@@ -497,16 +513,6 @@ export function matchesListQuery(item, query) {
     item?.headRefName,
     ...(Array.isArray(item?.labels) ? item.labels.map(label => label?.name) : []),
   ].some(value => String(value || '').toLowerCase().includes(q))
-}
-
-// Exact-number search (`#42` or `42`) beyond the fetched page: look the item
-// up server-side instead of filtering the 30-row list. Non-numeric queries
-// keep the cheap client-side filter — `gh search` would hit different indexes.
-// ponytail: one extra gh call only when the list misses; add a search-index
-// query when free-text search needs to cover old items too.
-export function numericListQuery(query) {
-  const q = String(query || '').trim().replace(/^#/, '')
-  return /^\d+$/.test(q) ? Number(q) : null
 }
 
 // Lookup is state-agnostic (`gh pr view N` ignores the filter), so a `#N` hit
@@ -1773,6 +1779,18 @@ function PrDetail({ repo, number, onBack }) {
     refetchInterval: 30_000,
   })
 
+  // Codex P1: hook must run every render — placed before any early return
+  // with a DOM guard. Previously below the returns, it changed hook count
+  // between loading / loaded renders (React "more hooks" crash).
+  // Codex P2 3827144614: if convQ resolves before headerQ, the effect fires
+  // while loading (no viewport) and would not re-fire when headerQ mounts
+  // unless headerQ is a dep.
+  useEffect(() => {
+    const el = convEndRef.current?.closest('[data-radix-scroll-area-viewport]')
+    if (!el) return
+    setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 40)
+  }, [convQ.data, page, headerQ.data])
+
   const d = headerQ.data
   if (headerQ.isLoading) return jsx(DetailLoading, { repo, number, onBack, backLabel: 'Back to pull requests' })
   if (headerQ.isError) return jsx(DetailError, { repo, number, title: 'Could not load pull request', error: headerQ.error, onBack, backLabel: 'Back to pull requests' })
@@ -1785,12 +1803,6 @@ function PrDetail({ repo, number, onBack }) {
   const comments = convQ.data?.comments || []
   const reviews = convQ.data?.reviews || []
   const threads = convQ.data?.threads || []
-  // Default true hides the button before any scroll; re-check when data or
-  // tab changes so a long conversation shows it without a first scroll.
-  useEffect(() => {
-    const el = convEndRef.current?.closest('[data-radix-scroll-area-viewport]')
-    if (el) setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 40)
-  }, [convQ.data, page])
   // Issue #9: one chronological timeline of reviews, issue comments, and inline threads.
   const timeline = [
     ...reviews.map((r, i) => ({ ts: r.submitted_at, el: jsx(CommentCard, { login: r.user, verb: 'reviewed', time: ago(r.submitted_at), timestamp: r.submitted_at, reviewState: r.state, body: r.body, permalink: r.html_url }, `r-${i}`) })),
@@ -1839,13 +1851,12 @@ function PrDetail({ repo, number, onBack }) {
       jsxs('div', { className: 'relative flex-1 min-h-0', children: [
         jsx(ScrollArea, {
           className: 'h-full',
-          // SDK ScrollArea forwards props to the outer div; the real scroller
-          // is the inner Radix Viewport. Scroll doesn't bubble but capture
-          // still traverses ancestors, so onScrollCapture fires with
-          // e.target = viewport.
+          // Pullfrog: nested Markdown scrollers (code blocks) also bubble via
+          // capture with e.target = that scroller — ignore unless it's the
+          // conversation viewport.
           onScrollCapture: e => {
             const el = e.target
-            if (el?.scrollHeight == null) return
+            if (!(el instanceof HTMLElement) || !el.matches('[data-radix-scroll-area-viewport]')) return
             setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 40)
           },
           children:
