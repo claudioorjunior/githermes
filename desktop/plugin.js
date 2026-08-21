@@ -288,7 +288,10 @@ async function shJson(cmd) {
   try { return JSON.parse(out) } catch { throw new Error('gh JSON parse failed: ' + out.slice(0, 300)) }
 }
 
-function repoOk(r) {
+// Canonical owner/repo shape guard: every ghApi/sh* caller validates through
+// this before interpolation into a shell command (#24 gates the manual picker
+// input on it too).
+export function repoOk(r) {
   return typeof r === 'string' && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(r)
 }
 
@@ -760,11 +763,14 @@ function RepoLabel({ repo, size = 20 }) {
 function RepoPicker({ repos, value, onChange }) {
   const [manual, setManual] = useState('')
   if (!repos?.length) {
+    // Issue #24: gate "Use" on the canonical owner/repo validator (repoOk) so
+    // invalid free-text cannot poison downstream queries.
+    const manualOk = repoOk(manual.trim())
     return jsxs('div', {
       className: 'flex gap-2',
       children: [
         jsx(Input, { placeholder: 'owner/repo', value: manual, onChange: e => setManual(e.target.value), className: 'h-7 flex-1 text-xs' }),
-        jsx(Button, { size: 'sm', className: 'h-7', onClick: () => { if (manual.trim()) onChange(manual.trim()) }, children: 'Use' }),
+        jsx(Button, { size: 'sm', className: 'h-7', disabled: !manualOk, onClick: () => { if (manualOk) onChange(manual.trim()) }, children: 'Use' }),
       ],
     })
   }

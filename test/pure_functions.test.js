@@ -21,6 +21,7 @@ import {
   numericListQuery,
   isLongBody,
   lookupMatchesState,
+  repoOk,
 } from '../desktop/plugin.js'
 
 test('Issue #13: labelTextColor chooses high-contrast text color based on luminance', () => {
@@ -273,4 +274,22 @@ test('mdBlocks parses GFM markdown into structured AST blocks', () => {
   assert.equal(blocks[0].text, 'Title')
   assert.equal(blocks[1].t, 'pre')
   assert.equal(blocks[1].text, 'const x = 1')
+})
+
+test('Issue #24: repoOk accepts owner/repo, rejects shell-hostile free text', () => {
+  // Valid
+  assert.ok(repoOk('claudioorjunior/githermes'))
+  assert.ok(repoOk('owner.name/repo_name'))
+  assert.ok(repoOk('a-b.c_d/efg'))
+  // Invalid shapes
+  assert.ok(!repoOk('foo bar'))            // space
+  assert.ok(!repoOk('owner/repo/extra'))   // extra slash
+  assert.ok(!repoOk('justname'))           // no owner
+  assert.ok(!repoOk(''))                   // empty
+  assert.ok(!repoOk('a;b rm -rf /'))       // shell metacharacters
+  assert.ok(!repoOk('$(whoami)/x'))        // command substitution
+  assert.ok(!repoOk('a\nb/c'))             // newline
+  assert.ok(!repoOk(null))
+  assert.ok(!repoOk(undefined))
+  assert.ok(!repoOk(42))
 })
