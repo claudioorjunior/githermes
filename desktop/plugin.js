@@ -1722,12 +1722,6 @@ function PrDetail({ repo, number, onBack }) {
   const [page, setPage] = useState('conversation')
   const convEndRef = useRef(null)
   const [atBottom, setAtBottom] = useState(true)
-  // Default true hides the button before any scroll; flip on mount when the
-  // conversation is already taller than the viewport.
-  useEffect(() => {
-    const el = convEndRef.current?.closest('[data-radix-scroll-area-viewport]')
-    if (el) setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 40)
-  }, [convQ.data, page])
   const n = String(number)
   const headerQ = useQuery({
     queryKey: [ID, 'pr-page', repo, n],
@@ -1791,6 +1785,12 @@ function PrDetail({ repo, number, onBack }) {
   const comments = convQ.data?.comments || []
   const reviews = convQ.data?.reviews || []
   const threads = convQ.data?.threads || []
+  // Default true hides the button before any scroll; re-check when data or
+  // tab changes so a long conversation shows it without a first scroll.
+  useEffect(() => {
+    const el = convEndRef.current?.closest('[data-radix-scroll-area-viewport]')
+    if (el) setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 40)
+  }, [convQ.data, page])
   // Issue #9: one chronological timeline of reviews, issue comments, and inline threads.
   const timeline = [
     ...reviews.map((r, i) => ({ ts: r.submitted_at, el: jsx(CommentCard, { login: r.user, verb: 'reviewed', time: ago(r.submitted_at), timestamp: r.submitted_at, reviewState: r.state, body: r.body, permalink: r.html_url }, `r-${i}`) })),
