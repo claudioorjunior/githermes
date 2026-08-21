@@ -1722,6 +1722,12 @@ function PrDetail({ repo, number, onBack }) {
   const [page, setPage] = useState('conversation')
   const convEndRef = useRef(null)
   const [atBottom, setAtBottom] = useState(true)
+  // Default true hides the button before any scroll; flip on mount when the
+  // conversation is already taller than the viewport.
+  useEffect(() => {
+    const el = convEndRef.current?.closest('[data-radix-scroll-area-viewport]')
+    if (el) setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 40)
+  }, [convQ.data, page])
   const n = String(number)
   const headerQ = useQuery({
     queryKey: [ID, 'pr-page', repo, n],
@@ -1833,8 +1839,13 @@ function PrDetail({ repo, number, onBack }) {
       jsxs('div', { className: 'relative flex-1 min-h-0', children: [
         jsx(ScrollArea, {
           className: 'h-full',
-          onScroll: e => {
-            const el = e.currentTarget
+          // SDK ScrollArea forwards props to the outer div; the real scroller
+          // is the inner Radix Viewport. Scroll doesn't bubble but capture
+          // still traverses ancestors, so onScrollCapture fires with
+          // e.target = viewport.
+          onScrollCapture: e => {
+            const el = e.target
+            if (el?.scrollHeight == null) return
             setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 40)
           },
           children:
