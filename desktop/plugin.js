@@ -409,9 +409,11 @@ export function prStateKey(d) {
 }
 
 // `gh pr checks` exits 1 with "no checks reported on the '<branch>' branch" when a
-// PR has no CI (#23) — normal state, not an error. Match loosely: gh may reword it.
+// PR has no CI (#23) — normal state, not an error. Anchored to the documented
+// phrase so unrelated stderr containing "no checks" (e.g. an outage message)
+// still surfaces with Retry.
 export function isNoChecksError(e) {
-  return /no checks/i.test(String((e && e.message) || e || ''))
+  return /no checks reported/i.test(String((e && e.message) || e || ''))
 }
 
 // Issue #10: statusCheckRollup -> one CI state. Two shapes in the rollup:
