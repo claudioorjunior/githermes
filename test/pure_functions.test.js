@@ -23,6 +23,7 @@ import {
   lookupMatchesState,
   repoOk,
   repoApiPath,
+  isNoChecksError,
 } from '../desktop/plugin.js'
 
 test('Issue #13: labelTextColor chooses high-contrast text color based on luminance', () => {
@@ -303,4 +304,19 @@ test('repoApiPath encodes dot-only repository names as path components', () => {
   assert.equal(repoApiPath('owner/repo'), 'owner/repo')
   assert.equal(repoApiPath('owner/.'), 'owner/%2E')
   assert.equal(repoApiPath('owner/..'), 'owner/%2E%2E')
+})
+
+test('Issue #23: isNoChecksError matches gh "no checks reported" exit-1 message', () => {
+  // Real gh wording
+  assert.ok(isNoChecksError(new Error('no checks reported on the \'main\' branch')))
+  // Loose match survives gh rewording / trailing context
+  assert.ok(isNoChecksError(new Error('No Checks Reported On The Branch')))
+  assert.ok(isNoChecksError({ message: 'gh: no checks reported yet' }))
+  // Real errors must NOT be swallowed
+  assert.ok(!isNoChecksError(new Error('exit 1: unknown revision ref/main')))
+  // Collision regression (pullfrog review #38): outage-style stderr containing
+  // "no checks" must NOT be swallowed — only the documented phrase matches.
+  assert.ok(!isNoChecksError(new Error('API request failed: no checks service unavailable')))
+  assert.ok(!isNoChecksError(null))
+  assert.ok(!isNoChecksError(undefined))
 })
