@@ -380,6 +380,14 @@ async function ghApiBigPaginatedProjected(repo, path, jq) {
   return items
 }
 
+async function fetchPrByNumber(repo, n) {
+  return shJsonBig(`${GH} pr view ${sq(String(n))} --repo ${sq(repo)} --json number,title,state,author,updatedAt,url,baseRefName,headRefName,isDraft,additions,deletions,changedFiles,reviewDecision,statusCheckRollup`)
+}
+
+async function fetchIssueByNumber(repo, n) {
+  return shJsonBig(`${GH} issue view ${sq(String(n))} --repo ${sq(repo)} --json number,title,state,author,updatedAt,url,labels`)
+}
+
 async function shJsonLoose(cmd) {
   const r = await host.request('shell.exec', { command: cmd })
   const out = (r.stdout || '').trim()
@@ -489,6 +497,16 @@ export function matchesListQuery(item, query) {
     item?.headRefName,
     ...(Array.isArray(item?.labels) ? item.labels.map(label => label?.name) : []),
   ].some(value => String(value || '').toLowerCase().includes(q))
+}
+
+// Exact-number search (`#42` or `42`) beyond the fetched page: look the item
+// up server-side instead of filtering the 30-row list. Non-numeric queries
+// keep the cheap client-side filter — `gh search` would hit different indexes.
+// ponytail: one extra gh call only when the list misses; add a search-index
+// query when free-text search needs to cover old items too.
+export function numericListQuery(query) {
+  const q = String(query || '').trim().replace(/^#/, '')
+  return /^\d+$/.test(q) ? Number(q) : null
 }
 
 // Issue #9: REST review comments -> threads. Replies carry in_reply_to_id
@@ -1495,11 +1513,22 @@ function PrList({ repo, onOpen, query }) {
     queryFn: () => shJsonBig(`${GH} pr list --repo ${sq(repo)} --state ${sq(state)} --limit 30 --json number,title,state,author,updatedAt,url,baseRefName,headRefName,isDraft,additions,deletions,changedFiles,reviewDecision,statusCheckRollup`),
     staleTime: 15_000,
   })
+  const allItems = Array.isArray(q.data) ? q.data : []
+  const exactN = numericListQuery(query)
+  const miss = exactN != null && allItems.length > 0 && !allItems.some(it => it.number === exactN)
+  const lookup = useQuery({
+    queryKey: [ID, 'pr-lookup', repo, exactN],
+    enabled: !!repo && miss,
+    queryFn: async () => {
+      try { return await fetchPrByNumber(repo, exactN) } catch { return null }
+    },
+    staleTime: 15_000,
+  })
   if (!repo) return jsx(EmptyState, { title: 'Select a repository', description: 'Pick one above to list PRs.' })
   if (q.isLoading) return jsx(ListSkeleton, {})
   if (q.isError) return jsx(ListErrorState, { title: 'Could not load pull requests', error: q.error, onRetry: () => q.refetch() })
-  const allItems = Array.isArray(q.data) ? q.data : []
-  const items = allItems.filter(item => matchesListQuery(item, query))
+  const source = lookup.data ? [lookup.data] : allItems
+  const items = source.filter(item => matchesListQuery(item, query))
   if (!items.length) return jsx(ListEmptyState, { kind: 'prs', state, repo, query: allItems.length ? query : '' })
   return jsx(ScrollArea, {
     className: 'h-full',
@@ -1548,11 +1577,22 @@ function IssueList({ repo, onOpen, query }) {
     queryFn: () => shJsonBig(`${GH} issue list --repo ${sq(repo)} --state ${sq(state)} --limit 30 --json number,title,state,author,updatedAt,url,labels`),
     staleTime: 15_000,
   })
+  const allItems = Array.isArray(q.data) ? q.data : []
+  const exactN = numericListQuery(query)
+  const miss = exactN != null && allItems.length > 0 && !allItems.some(it => it.number === exactN)
+  const lookup = useQuery({
+    queryKey: [ID, 'issue-lookup', repo, exactN],
+    enabled: !!repo && miss,
+    queryFn: async () => {
+      try { return await fetchIssueByNumber(repo, exactN) } catch { return null }
+    },
+    staleTime: 15_000,
+  })
   if (!repo) return jsx(EmptyState, { title: 'Select a repository', description: 'Pick one above to list issues.' })
   if (q.isLoading) return jsx(ListSkeleton, {})
   if (q.isError) return jsx(ListErrorState, { title: 'Could not load issues', error: q.error, onRetry: () => q.refetch() })
-  const allItems = Array.isArray(q.data) ? q.data : []
-  const items = allItems.filter(item => matchesListQuery(item, query))
+  const source = lookup.data ? [lookup.data] : allItems
+  const items = source.filter(item => matchesListQuery(item, query))
   if (!items.length) return jsx(ListEmptyState, { kind: 'issues', state, repo, query: allItems.length ? query : '' })
   return jsx(ScrollArea, {
     className: 'h-full',
@@ -1675,7 +1715,7 @@ function PrDetail({ repo, number, onBack }) {
   const commitsQ = useQuery({
     queryKey: [ID, 'pr-commits', repo, n],
     enabled: !!repo && !!number && page === 'commits',
-    queryFn: () => ghApiBig(repo, `pulls/${n}/commits`, '[.[:30][]|{sha:.sha[0:7],full:.sha,msg:(.commit.message|sub("\\n.*";"")),author:(.commit.author.name//.author.login//"—"),date:(.commit.author.date//"")}]'),
+    queryFn: () => ghApiBig(repo, `pulls/${n}/commits`, '[.[:30][]|{sha:.sha[0:7],full:.sha,msg:(.commit.message|sub("\n(?s).*";"")),author:(.commit.author.name//.author.login//"—"),date:(.commit.author.date//"")}]'),
     staleTime: 15_000,
     refetchInterval: 30_000,
   })

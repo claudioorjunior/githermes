@@ -18,6 +18,7 @@ import {
   mdBlocks,
   projectionBody,
   projectInlineComments,
+  numericListQuery,
 } from '../desktop/plugin.js'
 
 test('Issue #13: labelTextColor chooses high-contrast text color based on luminance', () => {
@@ -203,6 +204,17 @@ test('projectInlineComments guarantees user is a string, never the REST user obj
   assert.equal(out[1].user, '')
   assert.equal(out[3].user, 'codereview[bot]')
   assert.equal(projectInlineComments(undefined).length, 0)
+})
+
+test('numericListQuery detects exact-number searches for server-side lookup', () => {
+  // Codex P2: `#42`/`42` must escape the 30-row client filter; text stays local.
+  assert.equal(numericListQuery('#42'), 42)
+  assert.equal(numericListQuery('42'), 42)
+  assert.equal(numericListQuery('  #7 '), 7)
+  assert.equal(numericListQuery('fix login'), null)
+  assert.equal(numericListQuery('#42x'), null)
+  assert.equal(numericListQuery(''), null)
+  assert.equal(numericListQuery(null), null)
 })
 
 test('commentToChatText formats quote blocks for chat composer', () => {
