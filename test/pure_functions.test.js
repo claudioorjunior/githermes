@@ -21,6 +21,8 @@ import {
   numericListQuery,
   isLongBody,
   lookupMatchesState,
+  repoOk,
+  repoApiPath,
   isNoChecksError,
 } from '../desktop/plugin.js'
 
@@ -274,6 +276,34 @@ test('mdBlocks parses GFM markdown into structured AST blocks', () => {
   assert.equal(blocks[0].text, 'Title')
   assert.equal(blocks[1].t, 'pre')
   assert.equal(blocks[1].text, 'const x = 1')
+})
+
+test('Issue #24: repoOk accepts owner/repo, rejects shell-hostile free text', () => {
+  // Valid
+  assert.ok(repoOk('claudioorjunior/githermes'))
+  assert.ok(repoOk('owner.name/repo_name'))
+  assert.ok(repoOk('a-b.c_d/efg'))
+  assert.ok(repoOk('owner/.'))
+  assert.ok(repoOk('owner/..'))
+  // Invalid shapes
+  assert.ok(!repoOk('foo bar'))            // space
+  assert.ok(!repoOk('owner/repo/extra'))   // extra slash
+  assert.ok(!repoOk('justname'))           // no owner
+  assert.ok(!repoOk(''))                   // empty
+  assert.ok(!repoOk('a;b rm -rf /'))       // shell metacharacters
+  assert.ok(!repoOk('$(whoami)/x'))        // command substitution
+  assert.ok(!repoOk('a\nb/c'))             // newline
+  assert.ok(!repoOk('../repo'))
+  assert.ok(!repoOk('./repo'))
+  assert.ok(!repoOk(null))
+  assert.ok(!repoOk(undefined))
+  assert.ok(!repoOk(42))
+})
+
+test('repoApiPath encodes dot-only repository names as path components', () => {
+  assert.equal(repoApiPath('owner/repo'), 'owner/repo')
+  assert.equal(repoApiPath('owner/.'), 'owner/%2E')
+  assert.equal(repoApiPath('owner/..'), 'owner/%2E%2E')
 })
 
 test('Issue #23: isNoChecksError matches gh "no checks reported" exit-1 message', () => {

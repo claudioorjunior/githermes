@@ -288,14 +288,24 @@ async function shJson(cmd) {
   try { return JSON.parse(out) } catch { throw new Error('gh JSON parse failed: ' + out.slice(0, 300)) }
 }
 
-function repoOk(r) {
-  return typeof r === 'string' && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(r)
+// Canonical owner/repo shape guard: every ghApi/sh* caller validates through
+// this before interpolation into a shell command (#24 gates the manual picker
+// input on it too).
+export function repoOk(r) {
+  if (typeof r !== 'string') return false
+  const m = r.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/)
+  if (!m || m[1] === '.' || m[1] === '..') return false
+  return true
+}
+
+export function repoApiPath(repo) {
+  return repo.split('/').map(part => /^\.+$/.test(part) ? part.replaceAll('.', '%2E') : part).join('/')
 }
 
 // Compact GitHub REST via jq so shell.exec's 4k stdout cap doesn't truncate.
 async function ghApi(repo, path, jq) {
   if (!repoOk(repo)) throw new Error('invalid repo')
-  return shJson(`${GH} api ${sq(`repos/${repo}/${path}`)} --jq ${sq(jq)}`)
+  return shJson(`${GH} api ${sq(`repos/${repoApiPath(repo)}/${path}`)} --jq ${sq(jq)}`)
 }
 
 // shell.exec returns only the LAST 4000 chars of stdout (gateway cap), so big
@@ -333,13 +343,13 @@ async function shJsonBig(cmd) {
 
 async function ghApiBig(repo, path, jq) {
   if (!repoOk(repo)) throw new Error('invalid repo')
-  return shJsonBig(`${GH} api ${sq(`repos/${repo}/${path}`)} --jq ${sq(jq)}`)
+  return shJsonBig(`${GH} api ${sq(`repos/${repoApiPath(repo)}/${path}`)} --jq ${sq(jq)}`)
 }
 
 async function ghApiBigPaginated(repo, path) {
   if (!repoOk(repo)) throw new Error('invalid repo')
   // gh cannot combine --slurp with --jq, so flatten the raw page array here.
-  const pages = await shJsonBig(`${GH} api ${sq(`repos/${repo}/${path}`)} --paginate --slurp`)
+  const pages = await shJsonBig(`${GH} api ${sq(`repos/${repoApiPath(repo)}/${path}`)} --paginate --slurp`)
   return Array.isArray(pages) ? pages.flat() : []
 }
 
@@ -768,11 +778,14 @@ function RepoLabel({ repo, size = 20 }) {
 function RepoPicker({ repos, value, onChange }) {
   const [manual, setManual] = useState('')
   if (!repos?.length) {
+    // Issue #24: gate "Use" on the canonical owner/repo validator (repoOk) so
+    // invalid free-text cannot poison downstream queries.
+    const manualOk = repoOk(manual.trim())
     return jsxs('div', {
       className: 'flex gap-2',
       children: [
         jsx(Input, { placeholder: 'owner/repo', value: manual, onChange: e => setManual(e.target.value), className: 'h-7 flex-1 text-xs' }),
-        jsx(Button, { size: 'sm', className: 'h-7', onClick: () => { if (manual.trim()) onChange(manual.trim()) }, children: 'Use' }),
+        jsx(Button, { size: 'sm', className: 'h-7', disabled: !manualOk, onClick: () => { if (manualOk) onChange(manual.trim()) }, children: 'Use' }),
       ],
     })
   }
