@@ -1782,11 +1782,14 @@ function PrDetail({ repo, number, onBack }) {
   // Codex P1: hook must run every render — placed before any early return
   // with a DOM guard. Previously below the returns, it changed hook count
   // between loading / loaded renders (React "more hooks" crash).
+  // Codex P2 3827144614: if convQ resolves before headerQ, the effect fires
+  // while loading (no viewport) and would not re-fire when headerQ mounts
+  // unless headerQ is a dep.
   useEffect(() => {
     const el = convEndRef.current?.closest('[data-radix-scroll-area-viewport]')
     if (!el) return
     setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 40)
-  }, [convQ.data, page])
+  }, [convQ.data, page, headerQ.data])
 
   const d = headerQ.data
   if (headerQ.isLoading) return jsx(DetailLoading, { repo, number, onBack, backLabel: 'Back to pull requests' })
