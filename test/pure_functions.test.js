@@ -240,6 +240,10 @@ test('lookupMatchesState keeps exact-number hits inside the selected filter', ()
   assert.equal(lookupMatchesState(closedPr, 'closed', true), true)
   assert.equal(lookupMatchesState(openPr, 'open', true), true)
   assert.equal(lookupMatchesState(openPr, 'closed', true), false)
+  // Draft PRs belong to the open state (gh --draft is a separate filter).
+  const draftPr = { state: 'OPEN', isDraft: true }
+  assert.equal(lookupMatchesState(draftPr, 'open', true), true)
+  assert.equal(lookupMatchesState(draftPr, 'merged', true), false)
   // Issues: state is a plain OPEN/CLOSED string.
   const closedIssue = { state: 'CLOSED' }
   assert.equal(lookupMatchesState(closedIssue, 'open', false), false)

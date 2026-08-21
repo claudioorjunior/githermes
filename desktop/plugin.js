@@ -37,7 +37,7 @@ import {
   PANES_AREA,
   Tip,
 } from '@hermes/plugin-sdk'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { jsx, jsxs, Fragment } from 'react/jsx-runtime'
 
 const ID = 'github-prs'
@@ -517,6 +517,8 @@ export function lookupMatchesState(item, state, isPr) {
   if (s === 'all') return true
   if (isPr) {
     const key = prStateKey(item)
+    // Draft is a display pseudo-state; gh treats drafts as part of `open`.
+    if (s === 'open') return key === 'open' || key === 'draft'
     if (s === 'closed') return key === 'closed' || key === 'merged'
     return key === s
   }
@@ -1467,8 +1469,8 @@ function MdBody({ text }) {
   const collapsed = long && !open
   return jsxs('div', { className: 'text-sm leading-6 break-words space-y-2', children: [
     jsx('div', {
-      // inert: clipped links/buttons must leave the tab order, not just the paint.
-      inert: collapsed ? '' : undefined,
+      // inert is boolean in React 19 — '' is falsy and the attribute vanishes.
+      inert: collapsed || undefined,
       'aria-hidden': collapsed || undefined,
       className: collapsed ? 'max-h-72 overflow-hidden [mask-image:linear-gradient(to_bottom,black_55%,transparent_98%)]' : undefined,
       children: jsx(MdBlocksView, { blocks: mdBlocks(text), keyPrefix: 'b' }),
@@ -1946,7 +1948,13 @@ function GitHubPane() {
     }
   }, [reposQ.data, gitQ.data, repo])
   useEffect(() => { if (repo) pluginCtx?.storage.set('repo', repo) }, [repo])
-  useEffect(() => { $selPr.set(null); $selIssue.set(null); $listQuery.set('') }, [repo])
+  // Reset only on a real repo change — the pane and the full-page route share
+  // these atoms, so clearing on mount would drop the open detail and search.
+  const prevRepo = useRef(repo)
+  useEffect(() => {
+    if (prevRepo.current !== repo) { $selPr.set(null); $selIssue.set(null); $listQuery.set('') }
+    prevRepo.current = repo
+  }, [repo])
 
   const showPr = tab === 'prs' && selPr != null
   const showIssue = tab === 'issues' && selIssue != null
@@ -2036,7 +2044,13 @@ function GithubPage() {
     }
   }, [reposQ.data, gitQ.data, repo])
   useEffect(() => { if (repo) pluginCtx?.storage.set('repo', repo) }, [repo])
-  useEffect(() => { $selPr.set(null); $selIssue.set(null); $listQuery.set('') }, [repo])
+  // Reset only on a real repo change — the pane and the full-page route share
+  // these atoms, so clearing on mount would drop the open detail and search.
+  const prevRepo = useRef(repo)
+  useEffect(() => {
+    if (prevRepo.current !== repo) { $selPr.set(null); $selIssue.set(null); $listQuery.set('') }
+    prevRepo.current = repo
+  }, [repo])
 
   const showPr = tab === 'prs' && selPr != null
   const showIssue = tab === 'issues' && selIssue != null
