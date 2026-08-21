@@ -1,7 +1,7 @@
 # Contributing
 
-Thanks for helping! This is an early-stage plugin — bugs are expected and
-collaboration is very welcome. These rules mirror the conventions of the
+Thanks for helping! GitHermes is an early-stage plugin — bugs are expected
+and collaboration is very welcome. These rules mirror the conventions of the
 [Hermes Agent repo](https://github.com/NousResearch/hermes-agent/blob/main/CONTRIBUTING.md).
 
 ## Before you start

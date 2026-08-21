@@ -1,5 +1,5 @@
 /**
- * github-prs — GitHub PRs & Issues as a right workspace pane.
+ * GitHermes — GitHub PRs & Issues as a right workspace pane.
  * Data via `host.request('shell.exec')` + connected `gh`. No backend.
  * Session PR: cwd git branch (same join as core review) + transcript URL scan.
  * ponytail: lists cap at 30 rows by design; payloads route through shBig (stdout 4000 cap).
@@ -40,7 +40,7 @@ import {
 import { useState, useEffect, useRef } from 'react'
 import { jsx, jsxs, Fragment } from 'react/jsx-runtime'
 
-const ID = 'github-prs'
+const ID = 'githermes'
 const PANE_ID = `${ID}:pane`
 const REVEAL = 'hermes:pane-toggle-reveal'
 const GITHUB_ROUTE = '/github'
@@ -60,21 +60,21 @@ let pluginCtx = null
 // layout so content reflows to the pane width. Inline style => !important needed.
 // Selectors are prefixed so they can only match inside this pane.
 const PANE_WRAP_CSS = `
-.github-prs-pane, .github-prs-pane * { box-sizing: border-box; }
-.github-prs-pane {
+.githermes-pane, .githermes-pane * { box-sizing: border-box; }
+.githermes-pane {
   width: 100%; max-width: 100%; min-width: 0; overflow: hidden; background: var(--ui-editor-surface-background);
   container-type: inline-size;
 }
-.github-prs-pane [data-radix-scroll-area-viewport] > div { display: block !important; min-width: 0 !important; width: 100% !important; }
-.github-prs-pane :is(h1, h2, h3, h4, h5, h6, p, li, a, span, code, summary, td, th, blockquote) { max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }
-.github-prs-pane pre { max-width: 100%; overflow-x: auto; }
+.githermes-pane [data-radix-scroll-area-viewport] > div { display: block !important; min-width: 0 !important; width: 100% !important; }
+.githermes-pane :is(h1, h2, h3, h4, h5, h6, p, li, a, span, code, summary, td, th, blockquote) { max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }
+.githermes-pane pre { max-width: 100%; overflow-x: auto; }
 /* Runtime plugins need scoped divide color because Tailwind variants are not compiled. */
-.github-prs-pane .gh-divide > :not(:last-child) { border-bottom: 1px solid var(--ui-stroke-secondary); }
-.github-prs-pane .gh-shell-header {
+.githermes-pane .gh-divide > :not(:last-child) { border-bottom: 1px solid var(--ui-stroke-secondary); }
+.githermes-pane .gh-shell-header {
   background: var(--ui-editor-surface-background);
   box-shadow: inset 0 -1px var(--ui-stroke-secondary);
 }
-.github-prs-pane .gh-empty-icon {
+.githermes-pane .gh-empty-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -82,33 +82,33 @@ const PANE_WRAP_CSS = `
   background: var(--ui-bg-quaternary);
   color: var(--ui-text-secondary);
 }
-.github-prs-pane .gh-repo-trigger {
+.githermes-pane .gh-repo-trigger {
   height: 32px;
   border-radius: 999px;
   background: transparent;
   box-shadow: none;
   border-color: var(--ui-stroke-secondary);
 }
-.github-prs-pane .gh-repo-trigger:hover,
-.github-prs-pane .gh-repo-trigger[data-state='open'] {
+.githermes-pane .gh-repo-trigger:hover,
+.githermes-pane .gh-repo-trigger[data-state='open'] {
   background: var(--ui-bg-quinary);
   box-shadow: none;
 }
-.github-prs-pane .gh-list { display: flex; flex-direction: column; gap: 6px; padding: 8px; }
-.github-prs-pane .gh-list-row {
+.githermes-pane .gh-list { display: flex; flex-direction: column; gap: 6px; padding: 8px; }
+.githermes-pane .gh-list-row {
   border: 1px solid var(--ui-stroke-secondary);
   border-radius: 8px;
   background: var(--ui-bg-quaternary);
   transition: border-color 120ms ease, background-color 120ms ease;
 }
-.github-prs-pane .gh-list-row:hover {
+.githermes-pane .gh-list-row:hover {
   border-color: color-mix(in srgb, var(--ui-accent) 55%, var(--ui-stroke-secondary));
   background: var(--ui-bg-quinary);
 }
-.github-prs-pane .gh-list-row:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 1px; }
-.github-prs-pane .gh-list-title { font-size: 13px; line-height: 18px; font-weight: 600; }
-.github-prs-pane .gh-list-heading { color: var(--ui-text-tertiary); letter-spacing: .04em; text-transform: uppercase; }
-.github-prs-pane .gh-status-chip {
+.githermes-pane .gh-list-row:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 1px; }
+.githermes-pane .gh-list-title { font-size: 13px; line-height: 18px; font-weight: 600; }
+.githermes-pane .gh-list-heading { color: var(--ui-text-tertiary); letter-spacing: .04em; text-transform: uppercase; }
+.githermes-pane .gh-status-chip {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -119,14 +119,14 @@ const PANE_WRAP_CSS = `
   color: var(--ui-text-secondary);
   white-space: nowrap;
 }
-.github-prs-pane .gh-card-arrow { color: var(--ui-text-quaternary); opacity: .5; }
-.github-prs-pane .gh-list-row:hover .gh-card-arrow { color: var(--ui-accent); opacity: 1; }
-.github-prs-pane .gh-empty {
+.githermes-pane .gh-card-arrow { color: var(--ui-text-quaternary); opacity: .5; }
+.githermes-pane .gh-list-row:hover .gh-card-arrow { color: var(--ui-accent); opacity: 1; }
+.githermes-pane .gh-empty {
   min-height: 280px;
   background: transparent;
 }
-.github-prs-pane .gh-empty-icon { width: 48px; height: 48px; border-radius: 14px; font-size: 20px; }
-.github-prs-pane .gh-detail-summary {
+.githermes-pane .gh-empty-icon { width: 48px; height: 48px; border-radius: 14px; font-size: 20px; }
+.githermes-pane .gh-detail-summary {
   position: relative;
   display: flex;
   flex-direction: column;
@@ -135,32 +135,32 @@ const PANE_WRAP_CSS = `
   background-image: radial-gradient(circle, color-mix(in srgb, var(--ui-stroke-secondary) 55%, transparent) 0.65px, transparent 0.7px);
   background-size: 8px 8px;
 }
-.github-prs-pane .gh-detail-title { display: block; }
-.github-prs-pane .gh-detail-title .gh-item-num { white-space: nowrap; }
-.github-prs-pane .gh-detail-meta {
+.githermes-pane .gh-detail-title { display: block; }
+.githermes-pane .gh-detail-title .gh-item-num { white-space: nowrap; }
+.githermes-pane .gh-detail-meta {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   column-gap: 10px;
   row-gap: 6px;
 }
-.github-prs-pane .gh-detail-labels {
+.githermes-pane .gh-detail-labels {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
-.github-prs-pane .gh-detail-tabs { background: var(--ui-editor-surface-background); }
-.github-prs-pane .gh-detail-tabs > div { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.github-prs-pane .gh-detail-tabs button,
-.github-prs-pane .gh-list-tabs button { min-width: 0; overflow: hidden; padding-inline: 6px; text-overflow: ellipsis; white-space: nowrap; }
-.github-prs-pane .gh-list-tabs > div { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.github-prs-pane .gh-comment-action { opacity: .45; transition: opacity 120ms ease; }
-.github-prs-pane .gh-comment:hover .gh-comment-action,
-.github-prs-pane .gh-comment:focus-within .gh-comment-action { opacity: 1; }
-.github-prs-pane .gh-timeline { display: flex; flex-direction: column; gap: 12px; }
-.github-prs-pane .gh-timeline > :is(.gh-comment, .gh-commit) { position: relative; }
-.github-prs-pane .gh-timeline > .gh-comment:has(+ .gh-comment)::after,
-.github-prs-pane .gh-timeline > .gh-commit:has(+ .gh-commit)::after {
+.githermes-pane .gh-detail-tabs { background: var(--ui-editor-surface-background); }
+.githermes-pane .gh-detail-tabs > div { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.githermes-pane .gh-detail-tabs button,
+.githermes-pane .gh-list-tabs button { min-width: 0; overflow: hidden; padding-inline: 6px; text-overflow: ellipsis; white-space: nowrap; }
+.githermes-pane .gh-list-tabs > div { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.githermes-pane .gh-comment-action { opacity: .45; transition: opacity 120ms ease; }
+.githermes-pane .gh-comment:hover .gh-comment-action,
+.githermes-pane .gh-comment:focus-within .gh-comment-action { opacity: 1; }
+.githermes-pane .gh-timeline { display: flex; flex-direction: column; gap: 12px; }
+.githermes-pane .gh-timeline > :is(.gh-comment, .gh-commit) { position: relative; }
+.githermes-pane .gh-timeline > .gh-comment:has(+ .gh-comment)::after,
+.githermes-pane .gh-timeline > .gh-commit:has(+ .gh-commit)::after {
   content: '';
   position: absolute;
   left: 11px;
@@ -168,38 +168,38 @@ const PANE_WRAP_CSS = `
   background: var(--ui-stroke-secondary);
   pointer-events: none;
 }
-.github-prs-pane .gh-timeline > .gh-comment:has(+ .gh-comment)::after { top: 26px; bottom: -12px; }
-.github-prs-pane .gh-timeline > .gh-commit:has(+ .gh-commit)::after { top: 16px; bottom: -12px; }
-.github-prs-pane .gh-commit-node {
+.githermes-pane .gh-timeline > .gh-comment:has(+ .gh-comment)::after { top: 26px; bottom: -12px; }
+.githermes-pane .gh-timeline > .gh-commit:has(+ .gh-commit)::after { top: 16px; bottom: -12px; }
+.githermes-pane .gh-commit-node {
   width: 8px; height: 8px; margin: 6px 7px 0; flex: none;
   border-radius: 50%;
   border: 1.5px solid var(--ui-text-quaternary);
   background: var(--ui-editor-surface-background);
 }
-.github-prs-pane .gh-commit-action { opacity: .45; transition: opacity 120ms ease; }
-.github-prs-pane .gh-commit:hover .gh-commit-action,
-.github-prs-pane .gh-commit:focus-within .gh-commit-action { opacity: 1; }
-.github-prs-pane .gh-commit > summary { cursor: pointer; list-style: none; }
-.github-prs-pane .gh-commit > summary::-webkit-details-marker { display: none; }
-.github-prs-pane .gh-commit-panel { margin-left: 26px; margin-top: 8px; padding-bottom: 4px; }
-.github-prs-pane .gh-narrow-only { display: none; }
+.githermes-pane .gh-commit-action { opacity: .45; transition: opacity 120ms ease; }
+.githermes-pane .gh-commit:hover .gh-commit-action,
+.githermes-pane .gh-commit:focus-within .gh-commit-action { opacity: 1; }
+.githermes-pane .gh-commit > summary { cursor: pointer; list-style: none; }
+.githermes-pane .gh-commit > summary::-webkit-details-marker { display: none; }
+.githermes-pane .gh-commit-panel { margin-left: 26px; margin-top: 8px; padding-bottom: 4px; }
+.githermes-pane .gh-narrow-only { display: none; }
 @container (max-width: 359px) {
-  .github-prs-pane .gh-detail-tabs > div { display: flex; width: 100%; overflow-x: auto; }
-  .github-prs-pane .gh-detail-tabs button { flex: none; min-width: max-content; }
+  .githermes-pane .gh-detail-tabs > div { display: flex; width: 100%; overflow-x: auto; }
+  .githermes-pane .gh-detail-tabs button { flex: none; min-width: max-content; }
 }
 @container (max-width: 299px) {
-  .github-prs-pane .gh-comment { display: block; }
-  .github-prs-pane .gh-comment-avatar { display: none; }
-  .github-prs-pane .gh-timeline > .gh-comment:has(+ .gh-comment)::after,
-  .github-prs-pane .gh-timeline > .gh-commit:has(+ .gh-commit)::after { display: none; }
-  .github-prs-pane .gh-commit-action { opacity: 1; }
-  .github-prs-pane .gh-comment-action { opacity: 1; }
-  .github-prs-pane .gh-detail-meta { display: none; }
-  .github-prs-pane .gh-detail-title { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .githermes-pane .gh-comment { display: block; }
+  .githermes-pane .gh-comment-avatar { display: none; }
+  .githermes-pane .gh-timeline > .gh-comment:has(+ .gh-comment)::after,
+  .githermes-pane .gh-timeline > .gh-commit:has(+ .gh-commit)::after { display: none; }
+  .githermes-pane .gh-commit-action { opacity: 1; }
+  .githermes-pane .gh-comment-action { opacity: 1; }
+  .githermes-pane .gh-detail-meta { display: none; }
+  .githermes-pane .gh-detail-title { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 }
 @container (max-width: 239px) {
-  .github-prs-pane .gh-pane-content { display: none; }
-  .github-prs-pane .gh-narrow-only { display: flex; }
+  .githermes-pane .gh-pane-content { display: none; }
+  .githermes-pane .gh-narrow-only { display: flex; }
 }
 `
 
@@ -2162,13 +2162,13 @@ function GithubPage() {
 
 export default {
   id: ID,
-  name: 'GitHub PRs',
+  name: 'GitHermes',
   register(ctx) {
     pluginCtx = ctx
     const saved = ctx.storage.get('repo')
     if (saved) $repo.set(saved)
 
-    const paneWrap = () => jsxs('div', { className: 'github-prs-pane h-full min-h-0 min-w-0 max-w-full overflow-hidden', children: [
+    const paneWrap = () => jsxs('div', { className: 'githermes-pane h-full min-h-0 min-w-0 max-w-full overflow-hidden', children: [
       jsx('style', { children: PANE_WRAP_CSS }),
       jsxs('div', { className: 'gh-narrow-only h-full flex-col items-center justify-center gap-2 px-2 text-center text-(--ui-text-quaternary)', children: [
         jsx(Codicon, { name: 'github', className: 'text-base' }),
@@ -2176,7 +2176,7 @@ export default {
       ] }),
       jsx('div', { className: 'gh-pane-content h-full min-h-0', children: jsx(GitHubPane, {}) }),
     ] })
-    const pageShell = () => jsxs('div', { className: 'github-prs-pane h-full min-h-0 min-w-0 max-w-full overflow-hidden bg-(--ui-editor-surface-background)', children: [jsx('style', { children: PANE_WRAP_CSS }), jsx(GithubPage, {})] })
+    const pageShell = () => jsxs('div', { className: 'githermes-pane h-full min-h-0 min-w-0 max-w-full overflow-hidden bg-(--ui-editor-surface-background)', children: [jsx('style', { children: PANE_WRAP_CSS }), jsx(GithubPage, {})] })
 
     ctx.register({
       id: 'pane',
@@ -2208,12 +2208,12 @@ export default {
     ctx.register({
       id: 'palette',
       area: PALETTE_AREA,
-      data: { id: 'github-prs.open', label: 'Open GitHub pane', keywords: ['github', 'pr', 'issue', 'pull request'], run: openGithubPane },
+      data: { id: 'githermes.open', label: 'Open GitHub pane', keywords: ['github', 'pr', 'issue', 'pull request'], run: openGithubPane },
     })
     ctx.register({
       id: 'palette-page',
       area: PALETTE_AREA,
-      data: { id: 'github-prs.open-page', label: 'GitHub: Open page', keywords: ['github', 'page', 'pr', 'issue'], run: openGithubPage },
+      data: { id: 'githermes.open-page', label: 'GitHub: Open page', keywords: ['github', 'page', 'pr', 'issue'], run: openGithubPage },
     })
     ctx.register({ id: 'titlebar-github', area: TITLEBAR_AREAS.right, order: 20, render: () => jsx(TitlebarGithubButton, {}) })
     ctx.register({ id: 'titlebar-session-pr', area: TITLEBAR_AREAS.center, order: 10, render: () => jsx(SessionPrChip, {}) })

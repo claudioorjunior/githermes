@@ -71,8 +71,8 @@ test('Issue #12: parsePatch parses unified diff patch into structured row model'
 })
 
 test('parseRemote extracts owner/repo from various git remote URL shapes', () => {
-  assert.equal(parseRemote('https://github.com/claudioorjunior/hermes-github-prs.git'), 'claudioorjunior/hermes-github-prs')
-  assert.equal(parseRemote('git@github.com:claudioorjunior/hermes-github-prs.git'), 'claudioorjunior/hermes-github-prs')
+  assert.equal(parseRemote('https://github.com/claudioorjunior/githermes.git'), 'claudioorjunior/githermes')
+  assert.equal(parseRemote('git@github.com:claudioorjunior/githermes.git'), 'claudioorjunior/githermes')
   assert.equal(parseRemote('https://github.com/owner/repo'), 'owner/repo')
   assert.equal(parseRemote(''), null)
   assert.equal(parseRemote(null), null)
