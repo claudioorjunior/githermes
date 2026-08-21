@@ -289,6 +289,11 @@ test('Issue #24: repoOk accepts owner/repo, rejects shell-hostile free text', ()
   assert.ok(!repoOk('a;b rm -rf /'))       // shell metacharacters
   assert.ok(!repoOk('$(whoami)/x'))        // command substitution
   assert.ok(!repoOk('a\nb/c'))             // newline
+  // Path components are not GitHub names (pullfrog review #39)
+  assert.ok(!repoOk('owner/.'))
+  assert.ok(!repoOk('owner/..'))
+  assert.ok(!repoOk('../repo'))
+  assert.ok(!repoOk('./repo'))
   assert.ok(!repoOk(null))
   assert.ok(!repoOk(undefined))
   assert.ok(!repoOk(42))

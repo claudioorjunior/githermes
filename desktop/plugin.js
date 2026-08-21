@@ -292,7 +292,11 @@ async function shJson(cmd) {
 // this before interpolation into a shell command (#24 gates the manual picker
 // input on it too).
 export function repoOk(r) {
-  return typeof r === 'string' && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(r)
+  if (typeof r !== 'string') return false
+  const m = r.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/)
+  // `.` and `..` are path components, not GitHub names (pullfrog review #39).
+  if (!m || m[1] === '.' || m[1] === '..' || m[2] === '.' || m[2] === '..') return false
+  return true
 }
 
 // Compact GitHub REST via jq so shell.exec's 4k stdout cap doesn't truncate.
