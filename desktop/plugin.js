@@ -1722,12 +1722,6 @@ function PrDetail({ repo, number, onBack }) {
   const [page, setPage] = useState('conversation')
   const convEndRef = useRef(null)
   const [atBottom, setAtBottom] = useState(true)
-  // Default true hides the button before any scroll; flip on mount when the
-  // conversation is already taller than the viewport.
-  useEffect(() => {
-    const el = convEndRef.current?.closest('[data-radix-scroll-area-viewport]')
-    if (el) setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 40)
-  }, [convQ.data, page])
   const n = String(number)
   const headerQ = useQuery({
     queryKey: [ID, 'pr-page', repo, n],
