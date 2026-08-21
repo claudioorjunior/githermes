@@ -1105,7 +1105,7 @@ function MergeControl({ repo, number }) {
   if (!open) {
     return jsxs(Button, {
       size: 'sm',
-      className: 'h-5 px-2 text-[10px] gap-1 ml-auto bg-(--ui-purple) text-white hover:bg-(--ui-purple)/85',
+      className: 'h-5 px-2 text-[10px] gap-1 ml-auto',
       onClick: () => { setOpen(true); setError(null) },
       children: [
         jsx(Codicon, { name: 'git-merge' }),
@@ -1185,7 +1185,7 @@ function MergeControl({ repo, number }) {
           }),
           jsxs(Button, {
             size: 'sm',
-            className: 'h-6 px-2.5 text-xs gap-1.5 bg-(--ui-purple) text-white hover:bg-(--ui-purple)/85 disabled:opacity-60',
+            className: 'h-6 px-2.5 text-xs gap-1.5 disabled:opacity-60',
             disabled: isMerging,
             onClick: handleMerge,
             children: isMerging
