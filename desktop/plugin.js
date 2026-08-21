@@ -408,6 +408,12 @@ export function prStateKey(d) {
   return s === 'closed' ? 'closed' : 'open'
 }
 
+// `gh pr checks` exits 1 with "no checks reported on the '<branch>' branch" when a
+// PR has no CI (#23) — normal state, not an error. Match loosely: gh may reword it.
+export function isNoChecksError(e) {
+  return /no checks/i.test(String((e && e.message) || e || ''))
+}
+
 // Issue #10: statusCheckRollup -> one CI state. Two shapes in the rollup:
 // CheckRun (status QUEUED|IN_PROGRESS|COMPLETED + conclusion) and StatusContext
 // (state SUCCESS|FAILURE|ERROR|PENDING|EXPECTED). Failing wins over pending.
@@ -1772,8 +1778,15 @@ function PrDetail({ repo, number, onBack }) {
     queryKey: [ID, 'pr-checks', repo, n],
     enabled: !!repo && !!number && (page === 'checks' || page === 'conversation'),
     queryFn: async () => {
-      const rows = await shJsonLoose(`${GH} pr checks ${sq(n)} --repo ${sq(repo)} --json name,state,bucket,link`)
-      return Array.isArray(rows) ? rows : []
+      try {
+        const rows = await shJsonLoose(`${GH} pr checks ${sq(n)} --repo ${sq(repo)} --json name,state,bucket,link`)
+        return Array.isArray(rows) ? rows : []
+      } catch (e) {
+        // `gh pr checks` exits 1 with "no checks reported…" when the PR has no CI (#23):
+        // normal state, not an error — surface the existing "No checks" empty state.
+        if (isNoChecksError(e)) return []
+        throw e
+      }
     },
     staleTime: 15_000,
     refetchInterval: 30_000,

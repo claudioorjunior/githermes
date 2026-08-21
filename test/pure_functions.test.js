@@ -21,6 +21,7 @@ import {
   numericListQuery,
   isLongBody,
   lookupMatchesState,
+  isNoChecksError,
 } from '../desktop/plugin.js'
 
 test('Issue #13: labelTextColor chooses high-contrast text color based on luminance', () => {
@@ -273,4 +274,16 @@ test('mdBlocks parses GFM markdown into structured AST blocks', () => {
   assert.equal(blocks[0].text, 'Title')
   assert.equal(blocks[1].t, 'pre')
   assert.equal(blocks[1].text, 'const x = 1')
+})
+
+test('Issue #23: isNoChecksError matches gh "no checks reported" exit-1 message', () => {
+  // Real gh wording
+  assert.ok(isNoChecksError(new Error('no checks reported on the \'main\' branch')))
+  // Loose match survives gh rewording / trailing context
+  assert.ok(isNoChecksError(new Error('No Checks Reported On The Branch')))
+  assert.ok(isNoChecksError({ message: 'gh: no checks reported yet' }))
+  // Real errors must NOT be swallowed
+  assert.ok(!isNoChecksError(new Error('exit 1: unknown revision ref/main')))
+  assert.ok(!isNoChecksError(null))
+  assert.ok(!isNoChecksError(undefined))
 })
