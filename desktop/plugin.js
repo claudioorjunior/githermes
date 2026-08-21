@@ -1720,6 +1720,8 @@ function DetailError({ repo, number, title, error, onBack, backLabel }) {
 
 function PrDetail({ repo, number, onBack }) {
   const [page, setPage] = useState('conversation')
+  const convEndRef = useRef(null)
+  const [atBottom, setAtBottom] = useState(true)
   const n = String(number)
   const headerQ = useQuery({
     queryKey: [ID, 'pr-page', repo, n],
@@ -1828,25 +1830,40 @@ function PrDetail({ repo, number, onBack }) {
           ],
         }),
       }),
-      jsx(ScrollArea, {
-        className: 'flex-1 min-h-0',
-        children:
-          page === 'conversation'
-            ? jsxs('div', { className: 'gh-timeline p-3', children: [
-                jsx(CommentCard, { login: d.user, verb: 'described this', body: d.body, timestamp: d.created_at, permalink: url, size: 20 }),
-                jsx(ChecksView, { checks, loading: checksQ.isLoading, error: checksQ.isError ? checksQ.error : null, onRetry: () => checksQ.refetch(), compact: true }),
-                convQ.isLoading
-                  ? jsx(Skeleton, { className: 'h-24 w-full rounded-md' })
-                  : timeline.length
-                    ? jsxs(Fragment, { children: timeline })
-                    : jsx('div', { className: 'text-[11px] text-(--ui-text-quaternary)', children: 'No comments yet.' }),
-              ] })
-            : page === 'commits'
-              ? jsx('div', { className: 'p-3', children: jsx(CommitsView, { repo, commits, loading: commitsQ.isLoading, error: commitsQ.isError ? commitsQ.error : null, onRetry: () => commitsQ.refetch() }) })
-              : page === 'checks'
-                ? jsx('div', { className: 'p-3', children: jsx(ChecksView, { checks, loading: checksQ.isLoading, error: checksQ.isError ? checksQ.error : null, onRetry: () => checksQ.refetch() }) })
-                : jsx('div', { className: 'p-3', children: jsx(FilesView, { files, loading: filesQ.isLoading, error: filesQ.isError ? filesQ.error : null, onRetry: () => filesQ.refetch() }) }),
-      }),
+      jsxs('div', { className: 'relative flex-1 min-h-0', children: [
+        jsx(ScrollArea, {
+          className: 'h-full',
+          onScroll: e => {
+            const el = e.currentTarget
+            setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 40)
+          },
+          children:
+            page === 'conversation'
+              ? jsxs('div', { className: 'gh-timeline p-3', children: [
+                  jsx(CommentCard, { login: d.user, verb: 'described this', body: d.body, timestamp: d.created_at, permalink: url, size: 20 }),
+                  jsx(ChecksView, { checks, loading: checksQ.isLoading, error: checksQ.isError ? checksQ.error : null, onRetry: () => checksQ.refetch(), compact: true }),
+                  convQ.isLoading
+                    ? jsx(Skeleton, { className: 'h-24 w-full rounded-md' })
+                    : timeline.length
+                      ? jsxs(Fragment, { children: timeline })
+                      : jsx('div', { className: 'text-[11px] text-(--ui-text-quaternary)', children: 'No comments yet.' }),
+                  jsx('div', { ref: convEndRef }),
+                ] })
+              : page === 'commits'
+                ? jsx('div', { className: 'p-3', children: jsx(CommitsView, { repo, commits, loading: commitsQ.isLoading, error: commitsQ.isError ? commitsQ.error : null, onRetry: () => commitsQ.refetch() }) })
+                : page === 'checks'
+                  ? jsx('div', { className: 'p-3', children: jsx(ChecksView, { checks, loading: checksQ.isLoading, error: checksQ.isError ? checksQ.error : null, onRetry: () => checksQ.refetch() }) })
+                  : jsx('div', { className: 'p-3', children: jsx(FilesView, { files, loading: filesQ.isLoading, error: filesQ.isError ? filesQ.error : null, onRetry: () => filesQ.refetch() }) }),
+        }),
+        page === 'conversation' && !atBottom ? jsxs('button', {
+          type: 'button',
+          onClick: () => convEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }),
+          className: 'absolute bottom-3 right-3 z-10 flex size-7 items-center justify-center rounded-full border border-(--ui-stroke-secondary) bg-(--ui-bg-quaternary)/90 text-(--ui-text-secondary) shadow-sm backdrop-blur hover:text-(--ui-text-primary)',
+          title: 'Jump to latest comment',
+          'aria-label': 'Jump to latest comment',
+          children: jsx(Codicon, { name: 'arrow-down' }),
+        }) : null,
+      ] }),
     ],
   })
 }
