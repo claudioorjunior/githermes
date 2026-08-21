@@ -343,19 +343,33 @@ async function ghApiBigPaginated(repo, path) {
   return Array.isArray(pages) ? pages.flat() : []
 }
 
+// Body of a `[...]` array filter — strip only the outer brackets so the
+// JS-side projection below can be recognized and re-applied (folding the whole
+// array expression to '' would skip the projection and leak raw objects into
+// the render tree, e.g. a full user object as a React child).
+export function projectionBody(jq) {
+  return String(jq || '').replace(/^\s*\[\s*/, '').replace(/\s*\]\s*$/, '').trim()
+}
+
+// Lean shape the inline-comment rows: `user` is always a string, never the
+// full REST user object, so nothing can reach a React child (React #31).
+export function projectInlineComments(items) {
+  return (items || []).map(c => ({
+    id: c.id, user: typeof c.user === 'string' ? c.user : (c.user?.login ?? ''), body: c.body ?? '',
+    path: c.path, line: c.line, original_line: c.original_line,
+    in_reply_to_id: c.in_reply_to_id, created_at: c.created_at,
+    html_url: c.html_url, diff_hunk: c.diff_hunk ?? '',
+  }))
+}
+
 async function ghApiBigPaginatedProjected(repo, path, jq) {
   const items = await ghApiBigPaginated(repo, path)
   if (!jq || !items.length) return items
   // Codex P1+P2: avoid `jq` binary and large-payload printf arg — project in JS.
-  const proj = jq.replace(/^\s*\[.*\]\s*$/, '').trim()
+  const proj = projectionBody(jq)
   // Recognize the two projections used by this plugin; fall back to raw items.
   if (proj.includes('diff_hunk')) {
-    return items.map(c => ({
-      id: c.id, user: c.user?.login ?? c.user, body: c.body ?? '',
-      path: c.path, line: c.line, original_line: c.original_line,
-      in_reply_to_id: c.in_reply_to_id, created_at: c.created_at,
-      html_url: c.html_url, diff_hunk: c.diff_hunk ?? '',
-    }))
+    return projectInlineComments(items)
   }
   if (proj.includes('patch')) {
     return items.map(f => ({

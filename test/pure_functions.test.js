@@ -16,6 +16,8 @@ import {
   commentToChatText,
   ago,
   mdBlocks,
+  projectionBody,
+  projectInlineComments,
 } from '../desktop/plugin.js'
 
 test('Issue #13: labelTextColor chooses high-contrast text color based on luminance', () => {
@@ -172,6 +174,35 @@ test('groupInlineThreads groups comments into root and replies', () => {
   assert.equal(threads[0].replies.length, 2)
   assert.equal(threads[1].root.id, 4)
   assert.equal(threads[1].replies.length, 0)
+})
+
+test('projectionBody strips only the outer array brackets so projections run (regression: React #31)', () => {
+  // A `[...]` array filter must keep its body for recognition; folding it to ''
+  // made ghApiBigPaginatedProjected return raw items, leaking a full REST user
+  // object into CommentCard and throwing React #31 ("Objects are not valid...").
+  const inlineJq =
+    '[.[]|{id,user:.user.login,body:(.body//""),path,line,original_line,in_reply_to_id,created_at,html_url,diff_hunk:(.diff_hunk//"")}]'
+  const filesJq = '[.[]|{filename,status,additions,deletions,patch:(.patch//"")}]'
+  assert.ok(projectionBody(inlineJq).includes('diff_hunk'))
+  assert.ok(projectionBody(filesJq).includes('patch'))
+  assert.equal(projectionBody(null), '')
+  // Non-array filters stay untouched (no projection recognized -> raw fallback).
+  assert.equal(projectionBody('{number,title}'), '{number,title}')
+})
+
+test('projectInlineComments guarantees user is a string, never the REST user object', () => {
+  const raw = [
+    { id: 1, user: { login: 'octocat', id: 1, node_id: 'U1' }, body: 'hi' },
+    { id: 2, user: { id: 2, node_id: 'U2' }, body: 'deleted user' },
+    { id: 3, user: null, body: 'null user' },
+    { id: 4, user: 'codereview[bot]', body: 'string user' },
+  ]
+  const out = projectInlineComments(raw)
+  for (const c of out) assert.equal(typeof c.user, 'string')
+  assert.equal(out[0].user, 'octocat')
+  assert.equal(out[1].user, '')
+  assert.equal(out[3].user, 'codereview[bot]')
+  assert.equal(projectInlineComments(undefined).length, 0)
 })
 
 test('commentToChatText formats quote blocks for chat composer', () => {
