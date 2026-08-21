@@ -509,6 +509,20 @@ export function numericListQuery(query) {
   return /^\d+$/.test(q) ? Number(q) : null
 }
 
+// Lookup is state-agnostic (`gh pr view N` ignores the filter), so a `#N` hit
+// from another state must not render in the current list. 'all' passes through.
+export function lookupMatchesState(item, state, isPr) {
+  if (!item) return false
+  const s = String(state || 'all').toLowerCase()
+  if (s === 'all') return true
+  if (isPr) {
+    const key = prStateKey(item)
+    if (s === 'closed') return key === 'closed' || key === 'merged'
+    return key === s
+  }
+  return String(item.state || '').toLowerCase() === s
+}
+
 // Issue #9: REST review comments -> threads. Replies carry in_reply_to_id
 // pointing at the thread root; an orphan (root outside the fetched page)
 // anchors its own thread. Cap: first 30 threads, bodies never truncated.
@@ -1451,6 +1465,9 @@ function MdBody({ text }) {
   const collapsed = long && !open
   return jsxs('div', { className: 'text-sm leading-6 break-words space-y-2', children: [
     jsx('div', {
+      // inert: clipped links/buttons must leave the tab order, not just the paint.
+      inert: collapsed ? '' : undefined,
+      'aria-hidden': collapsed || undefined,
       className: collapsed ? 'max-h-72 overflow-hidden [mask-image:linear-gradient(to_bottom,black_55%,transparent_98%)]' : undefined,
       children: jsx(MdBlocksView, { blocks: mdBlocks(text), keyPrefix: 'b' }),
     }),
@@ -1547,7 +1564,7 @@ function PrList({ repo, onOpen, query }) {
   if (!repo) return jsx(EmptyState, { title: 'Select a repository', description: 'Pick one above to list PRs.' })
   if (q.isLoading) return jsx(ListSkeleton, {})
   if (q.isError) return jsx(ListErrorState, { title: 'Could not load pull requests', error: q.error, onRetry: () => q.refetch() })
-  const source = lookup.data ? [lookup.data] : allItems
+  const source = lookup.data && lookupMatchesState(lookup.data, state, true) ? [lookup.data] : allItems
   const items = source.filter(item => matchesListQuery(item, query))
   if (!items.length) return jsx(ListEmptyState, { kind: 'prs', state, repo, query: allItems.length ? query : '' })
   return jsx(ScrollArea, {
@@ -1611,7 +1628,7 @@ function IssueList({ repo, onOpen, query }) {
   if (!repo) return jsx(EmptyState, { title: 'Select a repository', description: 'Pick one above to list issues.' })
   if (q.isLoading) return jsx(ListSkeleton, {})
   if (q.isError) return jsx(ListErrorState, { title: 'Could not load issues', error: q.error, onRetry: () => q.refetch() })
-  const source = lookup.data ? [lookup.data] : allItems
+  const source = lookup.data && lookupMatchesState(lookup.data, state, false) ? [lookup.data] : allItems
   const items = source.filter(item => matchesListQuery(item, query))
   if (!items.length) return jsx(ListEmptyState, { kind: 'issues', state, repo, query: allItems.length ? query : '' })
   return jsx(ScrollArea, {

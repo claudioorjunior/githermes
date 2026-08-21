@@ -20,6 +20,7 @@ import {
   projectInlineComments,
   numericListQuery,
   isLongBody,
+  lookupMatchesState,
 } from '../desktop/plugin.js'
 
 test('Issue #13: labelTextColor chooses high-contrast text color based on luminance', () => {
@@ -224,6 +225,27 @@ test('isLongBody collapses comments over the line/char thresholds', () => {
   assert.equal(isLongBody('x'.repeat(800)), false)
   assert.equal(isLongBody('x'.repeat(801)), true)
   assert.equal(isLongBody(''), false)
+})
+
+test('lookupMatchesState keeps exact-number hits inside the selected filter', () => {
+  // Regression: `gh pr view N` is state-agnostic; a merged PR must not leak
+  // into the Open list when the user searches `#N`.
+  const mergedPr = { state: 'CLOSED', merged: true }
+  const closedPr = { state: 'CLOSED' }
+  const openPr = { state: 'OPEN' }
+  assert.equal(lookupMatchesState(mergedPr, 'open', true), false)
+  assert.equal(lookupMatchesState(mergedPr, 'merged', true), true)
+  assert.equal(lookupMatchesState(mergedPr, 'closed', true), true)
+  assert.equal(lookupMatchesState(mergedPr, 'all', true), true)
+  assert.equal(lookupMatchesState(closedPr, 'closed', true), true)
+  assert.equal(lookupMatchesState(openPr, 'open', true), true)
+  assert.equal(lookupMatchesState(openPr, 'closed', true), false)
+  // Issues: state is a plain OPEN/CLOSED string.
+  const closedIssue = { state: 'CLOSED' }
+  assert.equal(lookupMatchesState(closedIssue, 'open', false), false)
+  assert.equal(lookupMatchesState(closedIssue, 'closed', false), true)
+  assert.equal(lookupMatchesState(closedIssue, 'all', false), true)
+  assert.equal(lookupMatchesState(null, 'all', true), false)
 })
 
 test('commentToChatText formats quote blocks for chat composer', () => {
