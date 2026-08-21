@@ -3,8 +3,19 @@
 GitHub PRs & Issues as a right workspace pane in [Hermes Desktop](https://hermes-agent.nousresearch.com/docs/user-guide/desktop).
 
 > **Community plugin.** GitHermes is an open-source, independent project. It is **not** an official Nous Research product and is not developed or maintained by the Hermes team. It works with Hermes Desktop through its public plugin API.
->
-> Sponsored by [CheaperInference](https://cheaperinference.com).
+
+## Sponsors
+
+<p align="center">
+  <a href="https://cheaperinference.com">
+    <img src="docs/cheaperinference-logo.png" width="88" alt="Cheaper Inference logo" style="vertical-align: middle">
+  </a>
+</p>
+<p align="center">
+  <strong><a href="https://cheaperinference.com">Cheaper Inference</a></strong> — one OpenAI-compatible API for leading models<br>
+  from OpenAI, Anthropic, Google and more, at up to 60% below list price.<br>
+  Usage-based, fund from $5, no monthly commitment.
+</p>
 
 A single-file desktop plugin (`@hermes/plugin-sdk`) that shows your repository's open PRs and issues in a dockable pane — conversation, reviews, commits, checks, files, and in-pane merge — styled after GitHub and themed with Hermes `--ui-*` variables. No backend, no extra token: data comes from the connected `gh` CLI via `host.request('shell.exec')`.
 
