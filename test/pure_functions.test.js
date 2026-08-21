@@ -6,12 +6,21 @@ import {
   prStateKey,
   ciState,
   reviewState,
+  checkTone,
+  summarizeChecks,
+  sortChecks,
+  matchesListQuery,
   groupInlineThreads,
   parseRemote,
   extractPrRef,
   commentToChatText,
   ago,
   mdBlocks,
+  projectionBody,
+  projectInlineComments,
+  numericListQuery,
+  isLongBody,
+  lookupMatchesState,
 } from '../desktop/plugin.js'
 
 test('Issue #13: labelTextColor chooses high-contrast text color based on luminance', () => {
@@ -97,7 +106,7 @@ test('ciState resolves failing, pending, passing and none', () => {
   assert.equal(ciState([{ status: 'COMPLETED', conclusion: 'STALE' }]), 'failing')
   assert.equal(ciState([{ status: 'WAITING' }]), 'pending')
   assert.equal(ciState([{ status: 'REQUESTED' }]), 'pending')
-  assert.equal(ciState([{ status: 'UNRECOGNIZED' }]), 'pending')
+  assert.equal(ciState([{ status: 'COMPLETED', conclusion: 'UNKNOWN' }]), 'pending')
   assert.equal(ciState([
     { status: 'COMPLETED', conclusion: 'SUCCESS' },
     { status: 'COMPLETED', conclusion: 'FAILURE' },
@@ -109,6 +118,50 @@ test('reviewState resolves review decision strings', () => {
   assert.equal(reviewState('CHANGES_REQUESTED'), 'changes')
   assert.equal(reviewState('REVIEW_REQUIRED'), 'required')
   assert.equal(reviewState(''), 'none')
+})
+
+test('summarizeChecks titles failing first and sortChecks orders by bucket', () => {
+  assert.equal(checkTone('fail'), 'bad')
+  assert.equal(checkTone('pending'), 'warn')
+  assert.equal(checkTone('pass'), 'good')
+  assert.equal(checkTone('cancel'), 'bad')
+  assert.equal(checkTone('skipping'), 'muted')
+  assert.deepEqual(summarizeChecks([]).title, 'No checks')
+  const rows = [
+    { name: 'lint', bucket: 'pass' },
+    { name: 'build', bucket: 'fail' },
+    { name: 'test', bucket: 'pending' },
+  ]
+  const summary = summarizeChecks(rows)
+  assert.equal(summary.fail, 1)
+  assert.equal(summary.pending, 1)
+  assert.equal(summary.pass, 1)
+  assert.equal(summary.title, 'Blocked by 1 failing check')
+  assert.deepEqual(sortChecks(rows).map(c => c.name), ['build', 'test', 'lint'])
+  assert.equal(summarizeChecks([{ bucket: 'pending' }]).title, 'Waiting on 1 check')
+  assert.equal(summarizeChecks([{ bucket: 'pass' }, { bucket: 'pass' }]).title, 'All checks passed')
+  assert.equal(summarizeChecks([{ bucket: 'cancel' }]).title, '1 check canceled')
+  assert.equal(summarizeChecks([{ bucket: 'skipping' }]).title, 'Skipped 1 check')
+  assert.equal(summarizeChecks([{ bucket: 'skipping' }, { bucket: 'pass' }]).title, 'All checks passed')
+  assert.equal(summarizeChecks([{ bucket: 'cancel' }, { bucket: 'skipping' }]).title, '1 check canceled')
+})
+
+test('matchesListQuery searches list metadata without case sensitivity', () => {
+  const item = {
+    number: 42,
+    title: 'Fix keyboard navigation',
+    author: { login: 'Octocat' },
+    headRefName: 'feat/keyboard',
+    labels: [{ name: 'Accessibility' }],
+  }
+  assert.equal(matchesListQuery(item, ''), true)
+  assert.equal(matchesListQuery(item, '42'), true)
+  assert.equal(matchesListQuery(item, '#42'), true)
+  assert.equal(matchesListQuery(item, '# 42'), true)
+  assert.equal(matchesListQuery(item, 'KEYBOARD'), true)
+  assert.equal(matchesListQuery(item, 'octocat'), true)
+  assert.equal(matchesListQuery(item, 'accessibility'), true)
+  assert.equal(matchesListQuery(item, 'missing'), false)
 })
 
 test('groupInlineThreads groups comments into root and replies', () => {
@@ -124,6 +177,79 @@ test('groupInlineThreads groups comments into root and replies', () => {
   assert.equal(threads[0].replies.length, 2)
   assert.equal(threads[1].root.id, 4)
   assert.equal(threads[1].replies.length, 0)
+})
+
+test('projectionBody strips only the outer array brackets so projections run (regression: React #31)', () => {
+  // A `[...]` array filter must keep its body for recognition; folding it to ''
+  // made ghApiBigPaginatedProjected return raw items, leaking a full REST user
+  // object into CommentCard and throwing React #31 ("Objects are not valid...").
+  const inlineJq =
+    '[.[]|{id,user:.user.login,body:(.body//""),path,line,original_line,in_reply_to_id,created_at,html_url,diff_hunk:(.diff_hunk//"")}]'
+  const filesJq = '[.[]|{filename,status,additions,deletions,patch:(.patch//"")}]'
+  assert.ok(projectionBody(inlineJq).includes('diff_hunk'))
+  assert.ok(projectionBody(filesJq).includes('patch'))
+  assert.equal(projectionBody(null), '')
+  // Non-array filters stay untouched (no projection recognized -> raw fallback).
+  assert.equal(projectionBody('{number,title}'), '{number,title}')
+})
+
+test('projectInlineComments guarantees user is a string, never the REST user object', () => {
+  const raw = [
+    { id: 1, user: { login: 'octocat', id: 1, node_id: 'U1' }, body: 'hi' },
+    { id: 2, user: { id: 2, node_id: 'U2' }, body: 'deleted user' },
+    { id: 3, user: null, body: 'null user' },
+    { id: 4, user: 'codereview[bot]', body: 'string user' },
+  ]
+  const out = projectInlineComments(raw)
+  for (const c of out) assert.equal(typeof c.user, 'string')
+  assert.equal(out[0].user, 'octocat')
+  assert.equal(out[1].user, '')
+  assert.equal(out[3].user, 'codereview[bot]')
+  assert.equal(projectInlineComments(undefined).length, 0)
+})
+
+test('numericListQuery detects exact-number searches for server-side lookup', () => {
+  // Codex P2: `#42`/`42` must escape the 30-row client filter; text stays local.
+  assert.equal(numericListQuery('#42'), 42)
+  assert.equal(numericListQuery('42'), 42)
+  assert.equal(numericListQuery('  #7 '), 7)
+  assert.equal(numericListQuery('fix login'), null)
+  assert.equal(numericListQuery('#42x'), null)
+  assert.equal(numericListQuery(''), null)
+  assert.equal(numericListQuery(null), null)
+})
+
+test('isLongBody collapses comments over the line/char thresholds', () => {
+  assert.equal(isLongBody(Array.from({ length: 12 }, (_, i) => `line ${i}`).join('\n')), false)
+  assert.equal(isLongBody(Array.from({ length: 13 }, (_, i) => `line ${i}`).join('\n')), true)
+  assert.equal(isLongBody('x'.repeat(800)), false)
+  assert.equal(isLongBody('x'.repeat(801)), true)
+  assert.equal(isLongBody(''), false)
+})
+
+test('lookupMatchesState keeps exact-number hits inside the selected filter', () => {
+  // Regression: `gh pr view N` is state-agnostic; a merged PR must not leak
+  // into the Open list when the user searches `#N`.
+  const mergedPr = { state: 'CLOSED', merged: true }
+  const closedPr = { state: 'CLOSED' }
+  const openPr = { state: 'OPEN' }
+  assert.equal(lookupMatchesState(mergedPr, 'open', true), false)
+  assert.equal(lookupMatchesState(mergedPr, 'merged', true), true)
+  assert.equal(lookupMatchesState(mergedPr, 'closed', true), true)
+  assert.equal(lookupMatchesState(mergedPr, 'all', true), true)
+  assert.equal(lookupMatchesState(closedPr, 'closed', true), true)
+  assert.equal(lookupMatchesState(openPr, 'open', true), true)
+  assert.equal(lookupMatchesState(openPr, 'closed', true), false)
+  // Draft PRs belong to the open state (gh --draft is a separate filter).
+  const draftPr = { state: 'OPEN', isDraft: true }
+  assert.equal(lookupMatchesState(draftPr, 'open', true), true)
+  assert.equal(lookupMatchesState(draftPr, 'merged', true), false)
+  // Issues: state is a plain OPEN/CLOSED string.
+  const closedIssue = { state: 'CLOSED' }
+  assert.equal(lookupMatchesState(closedIssue, 'open', false), false)
+  assert.equal(lookupMatchesState(closedIssue, 'closed', false), true)
+  assert.equal(lookupMatchesState(closedIssue, 'all', false), true)
+  assert.equal(lookupMatchesState(null, 'all', true), false)
 })
 
 test('commentToChatText formats quote blocks for chat composer', () => {
