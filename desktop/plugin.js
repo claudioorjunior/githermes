@@ -1215,6 +1215,7 @@ function Avatar({ login, size = 20 }) {
     return jsx('span', { className: 'inline-block rounded-full shrink-0 bg-(--ui-bg-quaternary)', style: { width: size, height: size } })
   }
   return jsx('img', {
+    key: who,
     src: `https://github.com/${encodeURIComponent(who)}.png?size=${size * 2}`,
     alt: who,
     className: 'rounded-full shrink-0 bg-(--ui-bg-quaternary) object-cover',
