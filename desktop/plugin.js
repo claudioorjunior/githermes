@@ -1101,9 +1101,9 @@ function MergeControl({ repo, number }) {
   }
 
   if (!open) {
-    return jsx(Button, {
+    return jsxs(Button, {
       size: 'sm',
-      className: 'h-5 px-2 text-[10px] gap-1 ml-auto',
+      className: 'h-5 px-2 text-[10px] gap-1 ml-auto border border-(--ui-purple)/40 bg-(--ui-purple)/10 text-(--ui-purple) hover:bg-(--ui-purple)/20',
       onClick: () => { setOpen(true); setError(null) },
       children: [
         jsx(Codicon, { name: 'git-merge' }),
@@ -1181,12 +1181,14 @@ function MergeControl({ repo, number }) {
             onClick: () => { setOpen(false); setError(null) },
             children: 'Cancel',
           }),
-          jsx(Button, {
+          jsxs(Button, {
             size: 'sm',
-            className: 'h-6 px-2.5 text-xs',
+            className: 'h-6 px-2.5 text-xs gap-1.5 bg-(--ui-purple) text-white hover:bg-(--ui-purple)/85 disabled:opacity-60',
             disabled: isMerging,
             onClick: handleMerge,
-            children: isMerging ? 'Merging...' : `Confirm ${methodLabel}`,
+            children: isMerging
+              ? [jsx(GlyphSpinner, {}), jsx('span', { children: 'Merging...' })]
+              : [jsx(Codicon, { name: 'git-merge' }), jsx('span', { children: `Confirm ${methodLabel}` })],
           }),
         ],
       }),
