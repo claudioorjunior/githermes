@@ -1206,7 +1206,10 @@ function MergeControl({ repo, number }) {
 
 function Avatar({ login, size = 20 }) {
   const who = String(login || '').replace(/^@/, '')
-  if (!who || who === '—') {
+  // Issue #25: deleted/renamed logins 404 on github.com/{login}.png — fall back
+  // to the same neutral circle as unknown authors instead of a broken glyph.
+  const [failed, setFailed] = useState(false)
+  if (!who || who === '—' || failed) {
     return jsx('span', { className: 'inline-block rounded-full shrink-0 bg-(--ui-bg-quaternary)', style: { width: size, height: size } })
   }
   return jsx('img', {
@@ -1215,6 +1218,9 @@ function Avatar({ login, size = 20 }) {
     className: 'rounded-full shrink-0 bg-(--ui-bg-quaternary) object-cover',
     style: { width: size, height: size },
     referrerPolicy: 'no-referrer',
+    loading: 'lazy',
+    decoding: 'async',
+    onError: () => setFailed(true),
   })
 }
 
