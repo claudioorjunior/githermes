@@ -294,15 +294,18 @@ async function shJson(cmd) {
 export function repoOk(r) {
   if (typeof r !== 'string') return false
   const m = r.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/)
-  // `.` and `..` are path components, not GitHub names (pullfrog review #39).
-  if (!m || m[1] === '.' || m[1] === '..' || m[2] === '.' || m[2] === '..') return false
+  if (!m || m[1] === '.' || m[1] === '..') return false
   return true
+}
+
+export function repoApiPath(repo) {
+  return repo.split('/').map(part => /^\.+$/.test(part) ? part.replaceAll('.', '%2E') : part).join('/')
 }
 
 // Compact GitHub REST via jq so shell.exec's 4k stdout cap doesn't truncate.
 async function ghApi(repo, path, jq) {
   if (!repoOk(repo)) throw new Error('invalid repo')
-  return shJson(`${GH} api ${sq(`repos/${repo}/${path}`)} --jq ${sq(jq)}`)
+  return shJson(`${GH} api ${sq(`repos/${repoApiPath(repo)}/${path}`)} --jq ${sq(jq)}`)
 }
 
 // shell.exec returns only the LAST 4000 chars of stdout (gateway cap), so big
@@ -340,13 +343,13 @@ async function shJsonBig(cmd) {
 
 async function ghApiBig(repo, path, jq) {
   if (!repoOk(repo)) throw new Error('invalid repo')
-  return shJsonBig(`${GH} api ${sq(`repos/${repo}/${path}`)} --jq ${sq(jq)}`)
+  return shJsonBig(`${GH} api ${sq(`repos/${repoApiPath(repo)}/${path}`)} --jq ${sq(jq)}`)
 }
 
 async function ghApiBigPaginated(repo, path) {
   if (!repoOk(repo)) throw new Error('invalid repo')
   // gh cannot combine --slurp with --jq, so flatten the raw page array here.
-  const pages = await shJsonBig(`${GH} api ${sq(`repos/${repo}/${path}`)} --paginate --slurp`)
+  const pages = await shJsonBig(`${GH} api ${sq(`repos/${repoApiPath(repo)}/${path}`)} --paginate --slurp`)
   return Array.isArray(pages) ? pages.flat() : []
 }
 

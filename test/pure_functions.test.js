@@ -22,6 +22,7 @@ import {
   isLongBody,
   lookupMatchesState,
   repoOk,
+  repoApiPath,
 } from '../desktop/plugin.js'
 
 test('Issue #13: labelTextColor chooses high-contrast text color based on luminance', () => {
@@ -281,6 +282,8 @@ test('Issue #24: repoOk accepts owner/repo, rejects shell-hostile free text', ()
   assert.ok(repoOk('claudioorjunior/githermes'))
   assert.ok(repoOk('owner.name/repo_name'))
   assert.ok(repoOk('a-b.c_d/efg'))
+  assert.ok(repoOk('owner/.'))
+  assert.ok(repoOk('owner/..'))
   // Invalid shapes
   assert.ok(!repoOk('foo bar'))            // space
   assert.ok(!repoOk('owner/repo/extra'))   // extra slash
@@ -289,12 +292,15 @@ test('Issue #24: repoOk accepts owner/repo, rejects shell-hostile free text', ()
   assert.ok(!repoOk('a;b rm -rf /'))       // shell metacharacters
   assert.ok(!repoOk('$(whoami)/x'))        // command substitution
   assert.ok(!repoOk('a\nb/c'))             // newline
-  // Path components are not GitHub names (pullfrog review #39)
-  assert.ok(!repoOk('owner/.'))
-  assert.ok(!repoOk('owner/..'))
   assert.ok(!repoOk('../repo'))
   assert.ok(!repoOk('./repo'))
   assert.ok(!repoOk(null))
   assert.ok(!repoOk(undefined))
   assert.ok(!repoOk(42))
+})
+
+test('repoApiPath encodes dot-only repository names as path components', () => {
+  assert.equal(repoApiPath('owner/repo'), 'owner/repo')
+  assert.equal(repoApiPath('owner/.'), 'owner/%2E')
+  assert.equal(repoApiPath('owner/..'), 'owner/%2E%2E')
 })
