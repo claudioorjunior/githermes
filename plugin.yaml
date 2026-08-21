@@ -1,3 +1,3 @@
-name: github-prs
+name: githermes
 version: "1.0"
 description: GitHub PRs & Issues as a right workspace pane in Hermes Desktop. Data via the connected gh CLI — no backend, no tokens.
