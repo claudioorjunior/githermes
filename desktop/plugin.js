@@ -1235,15 +1235,24 @@ function MergeControl({ repo, number }) {
 
 function Avatar({ login, size = 20 }) {
   const who = String(login || '').replace(/^@/, '')
-  if (!who || who === '—') {
+  // Issue #25: deleted/renamed logins 404 on github.com/{login}.png — fall back
+  // to the same neutral circle as unknown authors instead of a broken glyph.
+  // failedLogin (not a boolean): an instance reused for another login must
+  // retry the image instead of staying neutral forever (pullfrog review #40).
+  const [failedLogin, setFailedLogin] = useState(null)
+  if (!who || who === '—' || failedLogin === who) {
     return jsx('span', { className: 'inline-block rounded-full shrink-0 bg-(--ui-bg-quaternary)', style: { width: size, height: size } })
   }
   return jsx('img', {
+    key: who,
     src: `https://github.com/${encodeURIComponent(who)}.png?size=${size * 2}`,
     alt: who,
     className: 'rounded-full shrink-0 bg-(--ui-bg-quaternary) object-cover',
     style: { width: size, height: size },
     referrerPolicy: 'no-referrer',
+    loading: 'lazy',
+    decoding: 'async',
+    onError: () => setFailedLogin(who),
   })
 }
 
