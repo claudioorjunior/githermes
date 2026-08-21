@@ -1208,8 +1208,10 @@ function Avatar({ login, size = 20 }) {
   const who = String(login || '').replace(/^@/, '')
   // Issue #25: deleted/renamed logins 404 on github.com/{login}.png — fall back
   // to the same neutral circle as unknown authors instead of a broken glyph.
-  const [failed, setFailed] = useState(false)
-  if (!who || who === '—' || failed) {
+  // failedLogin (not a boolean): an instance reused for another login must
+  // retry the image instead of staying neutral forever (pullfrog review #40).
+  const [failedLogin, setFailedLogin] = useState(null)
+  if (!who || who === '—' || failedLogin === who) {
     return jsx('span', { className: 'inline-block rounded-full shrink-0 bg-(--ui-bg-quaternary)', style: { width: size, height: size } })
   }
   return jsx('img', {
@@ -1220,7 +1222,7 @@ function Avatar({ login, size = 20 }) {
     referrerPolicy: 'no-referrer',
     loading: 'lazy',
     decoding: 'async',
-    onError: () => setFailed(true),
+    onError: () => setFailedLogin(who),
   })
 }
 
