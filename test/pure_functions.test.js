@@ -271,12 +271,14 @@ test('commentToChatText formats quote blocks for chat composer', () => {
   assert.ok(text.includes('> https://github.com/owner/repo/pull/1#issuecomment-1'))
 })
 
-test('livePollInterval keeps open resources live and stops terminal ones', () => {
+test('livePollInterval keeps open resources live and slows terminal headers', () => {
   assert.equal(livePollInterval({ state: 'OPEN' }), 10_000)
   assert.equal(livePollInterval({ state: 'CLOSED' }), false)
   assert.equal(livePollInterval({ state: 'MERGED' }), false)
   assert.equal(livePollInterval({ merged: true }), false)
   assert.equal(livePollInterval(null), 10_000)
+  assert.equal(livePollInterval({ state: 'CLOSED' }, { header: true }), 60_000)
+  assert.equal(livePollInterval({ state: 'OPEN' }, { header: true }), 10_000)
 })
 
 test('commentBodyOk rejects empty and oversized comments', () => {

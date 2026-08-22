@@ -54,6 +54,7 @@ const TRUNK = new Set(['main', 'master', 'dev', 'develop', 'trunk'])
 const GH = 'PATH=/opt/homebrew/bin:/usr/local/bin:$PATH gh'
 const PR_URL = /https?:\/\/github\.com\/([^/\s]+)\/([^/\s#?]+)\/pull\/(\d+)/i
 const LIVE_POLL_MS = 10_000
+const HEADER_POLL_MS = 60_000
 const COMMENT_MAX = 65_536
 
 let pluginCtx = null
@@ -277,9 +278,11 @@ export function commentToChatText({ login, verb, timestamp, body, permalink }) {
   return parts.join('\n')
 }
 
-export function livePollInterval(data) {
+export function livePollInterval(data, opts) {
   const state = String(data?.state || '').toUpperCase()
-  return data?.merged || state === 'MERGED' || state === 'CLOSED' ? false : LIVE_POLL_MS
+  const terminal = !!(data?.merged || state === 'MERGED' || state === 'CLOSED')
+  if (!terminal) return LIVE_POLL_MS
+  return opts?.header ? HEADER_POLL_MS : false
 }
 
 export function commentBodyOk(body) {
@@ -302,6 +305,30 @@ async function sh(cmd) {
   const r = await host.request('shell.exec', { command: cmd })
   if (r.code !== 0) throw new Error((r.stderr || r.stdout || `exit ${r.code}`).trim().slice(0, 600))
   return (r.stdout || '').trim()
+}
+
+function utf8ToB64(text) {
+  const bytes = new TextEncoder().encode(String(text))
+  let bin = ''
+  for (const b of bytes) bin += String.fromCharCode(b)
+  return btoa(bin)
+}
+
+async function postIssueComment(repo, number, text) {
+  const tag = `ghprs.cmt.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
+  const file = `/tmp/${tag}`
+  const b64 = `/tmp/${tag}.b64`
+  try {
+    const encoded = utf8ToB64(text)
+    await sh(`: > ${sq(b64)}`)
+    for (let i = 0; i < encoded.length; i += 1800) {
+      await sh(`printf %s ${sq(encoded.slice(i, i + 1800))} >> ${sq(b64)}`)
+    }
+    await sh(`{ base64 -d < ${sq(b64)} || base64 -D < ${sq(b64)}; } > ${sq(file)}`)
+    await sh(`${GH} api ${sq(`repos/${repoApiPath(repo)}/issues/${number}/comments`)} --method POST -F ${sq(`body=@${file}`)} --silent`)
+  } finally {
+    sh(`unlink ${sq(file)}; unlink ${sq(b64)}`).catch(() => {})
+  }
 }
 
 async function shJson(cmd) {
@@ -1800,6 +1827,7 @@ function CommentComposer({ repo, number, kind, onPosted }) {
   const [body, setBody] = useState('')
   const [mode, setMode] = useState('write')
   const [focused, setFocused] = useState(false)
+  const inflight = useRef(false)
   const me = useQuery({
     queryKey: [ID, 'user'],
     queryFn: async () => {
@@ -1812,8 +1840,9 @@ function CommentComposer({ repo, number, kind, onPosted }) {
     mutationFn: async text => {
       if (!commentBodyOk(text)) throw new Error(`Comment must be between 1 and ${COMMENT_MAX} characters.`)
       if (!repoOk(repo)) throw new Error('invalid repo')
-      return sh(`${GH} api ${sq(`repos/${repoApiPath(repo)}/issues/${number}/comments`)} --method POST --raw-field body=${sq(text)} --silent`)
+      return postIssueComment(repo, number, text)
     },
+    onSettled: () => { inflight.current = false },
     onSuccess: async () => {
       setBody('')
       setMode('write')
@@ -1823,7 +1852,9 @@ function CommentComposer({ repo, number, kind, onPosted }) {
   const error = mutation.error?.message || mutation.error
   const expanded = focused || !!body.trim() || mode === 'preview' || !!error || mutation.isPending
   const submit = () => {
-    if (!mutation.isPending && commentBodyOk(body)) mutation.mutate(body)
+    if (inflight.current || mutation.isPending || !commentBodyOk(body)) return
+    inflight.current = true
+    mutation.mutate(body)
   }
   const tab = (id, label) => jsx('button', {
     type: 'button',
@@ -1903,7 +1934,7 @@ function PrDetail({ repo, number, onBack }) {
     enabled: !!repo && !!number,
     queryFn: () => ghApiBig(repo, `pulls/${n}`, '{number,title,state,draft,merged,mergeable,mergeable_state,user:.user.login,created_at,additions,deletions,changed_files,base:.base.ref,head:.head.ref,html_url,body:(.body//""),comments}'),
     staleTime: 5_000,
-    refetchInterval: q => livePollInterval(q.state.data),
+    refetchInterval: q => livePollInterval(q.state.data, { header: true }),
     refetchIntervalInBackground: true,
   })
   const convQ = useQuery({
@@ -2067,19 +2098,22 @@ function PrDetail({ repo, number, onBack }) {
           children: jsx(Codicon, { name: 'arrow-down' }),
         }) : null,
       ] }),
-      page === 'conversation' ? jsx(CommentComposer, {
-        repo,
-        number: n,
-        kind: 'pull request',
-        onPosted: async () => {
-          await Promise.all([
-            queryClient.invalidateQueries({ queryKey: [ID, 'pr-conv', repo, n] }),
-            queryClient.invalidateQueries({ queryKey: [ID, 'pr-page', repo, n] }),
-            queryClient.invalidateQueries({ queryKey: [ID, 'prs', repo] }),
-          ])
-          window.setTimeout(() => convEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }), 0)
-        },
-      }) : null,
+      jsx('div', {
+        hidden: page !== 'conversation',
+        children: jsx(CommentComposer, {
+          repo,
+          number: n,
+          kind: 'pull request',
+          onPosted: async () => {
+            await Promise.all([
+              queryClient.invalidateQueries({ queryKey: [ID, 'pr-conv', repo, n] }),
+              queryClient.invalidateQueries({ queryKey: [ID, 'pr-page', repo, n] }),
+              queryClient.invalidateQueries({ queryKey: [ID, 'prs', repo] }),
+            ])
+            window.setTimeout(() => convEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }), 0)
+          },
+        }),
+      }),
     ],
   })
 }
@@ -2091,7 +2125,7 @@ function IssueDetail({ repo, number, onBack }) {
     enabled: !!repo && !!number,
     queryFn: () => shJsonBig(`${GH} issue view ${sq(n)} --repo ${sq(repo)} --json number,title,body,state,author,createdAt,comments,labels,url`),
     staleTime: 5_000,
-    refetchInterval: query => livePollInterval(query.state.data),
+    refetchInterval: query => livePollInterval(query.state.data, { header: true }),
     refetchIntervalInBackground: true,
   })
   const d = q.data
