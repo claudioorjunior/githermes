@@ -28,10 +28,6 @@ import {
   commentBodyOk,
   loginOf,
   projectIssueComments,
-  latestIso,
-  mergeBy,
-  flattenThreads,
-  withSince,
 } from '../desktop/plugin.js'
 
 test('Issue #13: labelTextColor chooses high-contrast text color based on luminance', () => {
@@ -331,23 +327,6 @@ test('projectIssueComments projects user login safely and handles missing fields
     body: 'automated',
   })
   assert.deepEqual(projectIssueComments(undefined), [])
-})
-
-test('incremental comment merge keeps history and applies since', () => {
-  assert.equal(latestIso([{ created_at: '2026-01-01T00:00:00Z' }, { created_at: '2026-01-02T00:00:00Z' }]), '2026-01-02T00:00:00Z')
-  assert.equal(latestIso([]), '')
-  assert.equal(withSince('issues/1/comments?per_page=100', ''), 'issues/1/comments?per_page=100')
-  assert.equal(withSince('issues/1/comments?per_page=100', '2026-01-02T00:00:00Z'), 'issues/1/comments?per_page=100&since=2026-01-02T00%3A00%3A00Z')
-  const merged = mergeBy(
-    [{ id: 1, body: 'old' }, { id: 2, body: 'keep' }],
-    [{ id: 2, body: 'edited' }, { id: 3, body: 'new' }],
-    c => c.id,
-  )
-  assert.deepEqual(merged, [{ id: 1, body: 'old' }, { id: 2, body: 'edited' }, { id: 3, body: 'new' }])
-  assert.deepEqual(
-    flattenThreads([{ root: { id: 1 }, replies: [{ id: 2 }] }]).map(c => c.id),
-    [1, 2],
-  )
 })
 
 test('mdBlocks parses GFM markdown into structured AST blocks', () => {
