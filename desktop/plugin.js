@@ -430,11 +430,43 @@ export function projectInlineComments(items) {
 
 export function projectIssueComments(items) {
   return (items || []).map(c => ({
+    id: c.id,
     user: typeof c.user === 'string' ? c.user : (c.user?.login ?? ''),
     created_at: c.created_at ?? '',
     html_url: c.html_url ?? '',
     body: c.body ?? '',
   }))
+}
+
+export function latestIso(items, field = 'created_at') {
+  let max = ''
+  for (const it of items || []) {
+    const v = it?.[field]
+    if (typeof v === 'string' && v > max) max = v
+  }
+  return max
+}
+
+export function mergeBy(prev, next, keyFn) {
+  const map = new Map()
+  for (const row of [...(prev || []), ...(next || [])]) {
+    const k = keyFn(row)
+    if (k != null && k !== '') map.set(k, row)
+  }
+  return [...map.values()]
+}
+
+export function flattenThreads(threads) {
+  const out = []
+  for (const t of threads || []) {
+    if (t?.root) out.push(t.root)
+    if (Array.isArray(t?.replies)) out.push(...t.replies)
+  }
+  return out
+}
+
+export function withSince(path, since) {
+  return since ? `${path}${path.includes('?') ? '&' : '?'}since=${encodeURIComponent(since)}` : path
 }
 
 async function ghApiBigPaginatedProjected(repo, path, jq) {
@@ -1930,12 +1962,13 @@ function CommentComposer({ repo, number, kind, onPosted }) {
 function PrDetail({ repo, number, onBack }) {
   const [page, setPage] = useState('conversation')
   const convEndRef = useRef(null)
+  const lastConvCounts = useRef(null)
   const [atBottom, setAtBottom] = useState(true)
   const n = String(number)
   const headerQ = useQuery({
     queryKey: [ID, 'pr-page', repo, n],
     enabled: !!repo && !!number,
-    queryFn: () => ghApiBig(repo, `pulls/${n}`, '{number,title,state,draft,merged,mergeable,mergeable_state,user:.user.login,created_at,additions,deletions,changed_files,base:.base.ref,head:.head.ref,html_url,body:(.body//""),comments}'),
+    queryFn: () => ghApiBig(repo, `pulls/${n}`, '{number,title,state,draft,merged,mergeable,mergeable_state,user:.user.login,created_at,additions,deletions,changed_files,base:.base.ref,head:.head.ref,html_url,body:(.body//""),comments,review_comments}'),
     staleTime: 5_000,
     refetchInterval: q => livePollInterval(q.state.data, { header: true }),
     refetchIntervalInBackground: true,
@@ -1944,20 +1977,23 @@ function PrDetail({ repo, number, onBack }) {
     queryKey: [ID, 'pr-conv', repo, n],
     enabled: !!repo && !!number && page === 'conversation',
     queryFn: async () => {
-      const comments = await ghApiBigPaginatedProjected(repo, `issues/${n}/comments?per_page=100`, '[.[]|{user:.user.login,created_at,html_url,body:(.body//""),body_html:(.body_html//"")}]')
+      const prev = queryClient.getQueryData([ID, 'pr-conv', repo, n])
+      const sinceComments = latestIso(prev?.comments)
+      const sinceInline = latestIso(flattenThreads(prev?.threads))
+      const comments = await ghApiBigPaginatedProjected(repo, withSince(`issues/${n}/comments?per_page=100`, sinceComments), '[.[]|{user:.user.login,created_at,html_url,body:(.body//""),body_html:(.body_html//"")}]')
       const reviews = await ghApiBig(repo, `pulls/${n}/reviews`, '[.[:15][]|{user:.user.login,state,html_url,body:(.body//""),submitted_at}]')
       // Issue #9: line-level review comments live on their own endpoint; bodies
       // and hunks are big, so same shBig routing as the rest of this query.
-      const inline = await ghApiBigPaginatedProjected(repo, `pulls/${n}/comments?per_page=100`, '[.[]|{id,user:.user.login,body:(.body//""),path,line,original_line,in_reply_to_id,created_at,html_url,diff_hunk:(.diff_hunk//"")}]')
+      const inline = await ghApiBigPaginatedProjected(repo, withSince(`pulls/${n}/comments?per_page=100`, sinceInline), '[.[]|{id,user:.user.login,body:(.body//""),path,line,original_line,in_reply_to_id,created_at,html_url,diff_hunk:(.diff_hunk//"")}]')
+      const nextComments = Array.isArray(comments) ? comments : []
+      const nextInline = Array.isArray(inline) ? inline : []
       return {
-        comments: Array.isArray(comments) ? comments : [],
+        comments: sinceComments ? mergeBy(prev.comments, nextComments, c => c.id ?? c.html_url) : nextComments,
         reviews: Array.isArray(reviews) ? reviews : [],
-        threads: groupInlineThreads(inline),
+        threads: groupInlineThreads(sinceInline ? mergeBy(flattenThreads(prev.threads), nextInline, c => c.id) : nextInline),
       }
     },
     staleTime: 5_000,
-    refetchInterval: () => livePollInterval(headerQ.data),
-    refetchIntervalInBackground: true,
   })
   const filesQ = useQuery({
     queryKey: [ID, 'pr-files', repo, n],
@@ -2005,6 +2041,22 @@ function PrDetail({ repo, number, onBack }) {
     if (!el) return
     setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 40)
   }, [convQ.data, page, headerQ.data])
+
+  useEffect(() => {
+    lastConvCounts.current = null
+  }, [repo, n])
+
+  useEffect(() => {
+    if (!headerQ.data) return
+    const key = `${headerQ.data.comments ?? ''}:${headerQ.data.review_comments ?? ''}`
+    if (lastConvCounts.current === null) {
+      lastConvCounts.current = key
+      return
+    }
+    if (lastConvCounts.current === key) return
+    lastConvCounts.current = key
+    queryClient.invalidateQueries({ queryKey: [ID, 'pr-conv', repo, n] })
+  }, [headerQ.data?.comments, headerQ.data?.review_comments, repo, n])
 
   const d = headerQ.data
   if (headerQ.isLoading) return jsx(DetailLoading, { repo, number, onBack, backLabel: 'Back to pull requests' })

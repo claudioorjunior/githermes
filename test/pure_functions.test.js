@@ -28,6 +28,10 @@ import {
   commentBodyOk,
   loginOf,
   projectIssueComments,
+  latestIso,
+  mergeBy,
+  flattenThreads,
+  withSince,
 } from '../desktop/plugin.js'
 
 test('Issue #13: labelTextColor chooses high-contrast text color based on luminance', () => {
@@ -306,24 +310,44 @@ test('projectIssueComments projects user login safely and handles missing fields
   const res = projectIssueComments(raw)
   assert.equal(res.length, 3)
   assert.deepEqual(res[0], {
+    id: 10,
     user: 'alice',
     created_at: '2026-08-22T00:00:00Z',
     html_url: 'https://github.com/a/b/issues/1#issuecomment-1',
     body: 'looks good',
   })
   assert.deepEqual(res[1], {
+    id: 11,
     user: '',
     created_at: '2026-08-22T01:00:00Z',
     html_url: 'https://github.com/a/b/issues/1#issuecomment-2',
     body: '',
   })
   assert.deepEqual(res[2], {
+    id: 12,
     user: 'bot',
     created_at: '',
     html_url: '',
     body: 'automated',
   })
   assert.deepEqual(projectIssueComments(undefined), [])
+})
+
+test('incremental comment merge keeps history and applies since', () => {
+  assert.equal(latestIso([{ created_at: '2026-01-01T00:00:00Z' }, { created_at: '2026-01-02T00:00:00Z' }]), '2026-01-02T00:00:00Z')
+  assert.equal(latestIso([]), '')
+  assert.equal(withSince('issues/1/comments?per_page=100', ''), 'issues/1/comments?per_page=100')
+  assert.equal(withSince('issues/1/comments?per_page=100', '2026-01-02T00:00:00Z'), 'issues/1/comments?per_page=100&since=2026-01-02T00%3A00%3A00Z')
+  const merged = mergeBy(
+    [{ id: 1, body: 'old' }, { id: 2, body: 'keep' }],
+    [{ id: 2, body: 'edited' }, { id: 3, body: 'new' }],
+    c => c.id,
+  )
+  assert.deepEqual(merged, [{ id: 1, body: 'old' }, { id: 2, body: 'edited' }, { id: 3, body: 'new' }])
+  assert.deepEqual(
+    flattenThreads([{ root: { id: 1 }, replies: [{ id: 2 }] }]).map(c => c.id),
+    [1, 2],
+  )
 })
 
 test('mdBlocks parses GFM markdown into structured AST blocks', () => {
