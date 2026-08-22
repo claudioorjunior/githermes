@@ -28,6 +28,7 @@ import {
   commentBodyOk,
   loginOf,
   projectIssueComments,
+  isMergeConflict,
 } from '../desktop/plugin.js'
 
 test('Issue #13: labelTextColor chooses high-contrast text color based on luminance', () => {
@@ -380,4 +381,17 @@ test('Issue #23: isNoChecksError matches gh "no checks reported" exit-1 message'
   assert.ok(!isNoChecksError(new Error('API request failed: no checks service unavailable')))
   assert.ok(!isNoChecksError(null))
   assert.ok(!isNoChecksError(undefined))
+})
+
+test('Issue #32: isMergeConflict flags only the known-conflict mergeable state', () => {
+  // GitHub normalized REST value for conflicting histories
+  assert.ok(isMergeConflict('dirty'))
+  // Unknown / computing / clean and any future state keep today's behavior
+  assert.ok(!isMergeConflict('unknown'))
+  assert.ok(!isMergeConflict('clean'))
+  assert.ok(!isMergeConflict('blocked'))
+  assert.ok(!isMergeConflict('unstable'))
+  assert.ok(!isMergeConflict('behind'))
+  assert.ok(!isMergeConflict(null))
+  assert.ok(!isMergeConflict(undefined))
 })

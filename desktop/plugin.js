@@ -487,6 +487,13 @@ export function prStateKey(d) {
   return s === 'closed' ? 'closed' : 'open'
 }
 
+// Issue #32: only the normalized GitHub REST `mergeable_state: "dirty"` is a
+// known conflict. Unknown/computing (null) and other states must keep the
+// merge control available — GitHub may just not have finished computing.
+export function isMergeConflict(mergeableState) {
+  return mergeableState === 'dirty'
+}
+
 // `gh pr checks` exits 1 with "no checks reported on the '<branch>' branch" when a
 // PR has no CI (#23) — normal state, not an error. Anchored to the documented
 // phrase so unrelated stderr containing "no checks" (e.g. an outage message)
@@ -1178,12 +1185,34 @@ function FilesView({ files, loading, error, onRetry }) {
 }
 
 // Issue #2: Merge PR control (method select, delete-branch checkbox, confirm, error handling)
-function MergeControl({ repo, number }) {
+function MergeControl({ repo, number, mergeableState, head }) {
   const [open, setOpen] = useState(false)
   const [method, setMethod] = useState('squash')
   const [deleteBranch, setDeleteBranch] = useState(false)
   const [isMerging, setIsMerging] = useState(false)
   const [error, setError] = useState(null)
+
+  // Issue #32: conflicted PRs can only be resolved from the head branch
+  // (merge/rebase main locally and push). No merge button or method select —
+  // the previous flow walked through both just to hit a raw gh error.
+  // Unknown/computing states keep the control: GitHub may not have computed yet.
+  if (isMergeConflict(mergeableState)) {
+    return jsxs('div', {
+      role: 'status',
+      className: 'flex items-start gap-2 rounded-md border border-(--ui-yellow)/40 bg-(--ui-bg-quaternary) p-2.5 mt-2 text-[11px] text-(--ui-text-secondary)',
+      children: [
+        jsx(Codicon, { name: 'error', className: 'mt-0.5 shrink-0 text-(--ui-yellow)' }),
+        jsxs('span', { children: [
+          jsxs('span', { className: 'font-semibold text-(--ui-text-primary)', children: ['Merge blocked by conflicts. '] }),
+          'Resolve on ',
+          jsx('code', { className: 'font-mono', children: head || 'the head branch' }),
+          ' (merge or rebase ',
+          jsx('span', { className: 'font-mono', children: 'main' }),
+          ' locally, then push).',
+        ] }),
+      ],
+    })
+  }
 
   const handleMerge = async () => {
     setIsMerging(true)
@@ -2046,7 +2075,7 @@ function PrDetail({ repo, number, onBack }) {
             d.comments ? jsx(Badge, { variant: 'secondary', className: 'h-5 text-[10px]', children: `${d.comments} comments` }) : null,
           ] }),
           prStateKey(d) === 'open' && !d.draft
-            ? jsx(MergeControl, { repo, number: d.number, mergeableState: d.mergeable_state })
+            ? jsx(MergeControl, { repo, number: d.number, mergeableState: d.mergeable_state, head: d.head })
             : null,
         ],
       }),
