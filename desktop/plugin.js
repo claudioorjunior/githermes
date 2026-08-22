@@ -155,6 +155,12 @@ const PANE_WRAP_CSS = `
 }
 .githermes-pane .gh-detail-root { min-height: 0; }
 .githermes-pane .gh-comment-composer { flex: none; }
+.githermes-pane .gh-comment-composer textarea {
+  field-sizing: content;
+  min-height: 2rem;
+  max-height: 8rem;
+  overflow-y: auto;
+}
 .githermes-pane .gh-detail-tabs { background: var(--ui-editor-surface-background); }
 .githermes-pane .gh-detail-tabs > div { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .githermes-pane .gh-detail-tabs button,
@@ -1793,6 +1799,7 @@ function DetailError({ repo, number, title, error, onBack, backLabel }) {
 function CommentComposer({ repo, number, kind, onPosted }) {
   const [body, setBody] = useState('')
   const [mode, setMode] = useState('write')
+  const [focused, setFocused] = useState(false)
   const me = useQuery({
     queryKey: [ID, 'user'],
     queryFn: async () => {
@@ -1814,6 +1821,7 @@ function CommentComposer({ repo, number, kind, onPosted }) {
     },
   })
   const error = mutation.error?.message || mutation.error
+  const expanded = focused || !!body.trim() || mode === 'preview' || !!error || mutation.isPending
   const submit = () => {
     if (!mutation.isPending && commentBodyOk(body)) mutation.mutate(body)
   }
@@ -1832,14 +1840,16 @@ function CommentComposer({ repo, number, kind, onPosted }) {
     className: 'gh-comment-composer shrink-0 border-t border-(--ui-stroke-secondary) px-3 py-2',
     'data-slot': 'githermes-comment-composer',
     onSubmit: e => { e.preventDefault(); submit() },
+    onFocus: () => setFocused(true),
+    onBlur: e => { if (!e.currentTarget.contains(e.relatedTarget)) setFocused(false) },
     children: [
       jsxs('div', { className: 'flex items-start gap-2', children: [
         jsx(Avatar, { login: me.data, size: 22 }),
         jsxs('div', { className: 'min-w-0 flex-1 overflow-hidden rounded-md border border-(--ui-stroke-secondary)', children: [
-          jsxs('div', { className: 'flex items-center gap-3 border-b border-(--ui-stroke-secondary) px-2.5 pt-1.5', children: [
+          expanded ? jsxs('div', { className: 'flex items-center gap-3 border-b border-(--ui-stroke-secondary) px-2.5 pt-1.5', children: [
             tab('write', 'Write'),
             tab('preview', 'Preview'),
-          ] }),
+          ] }) : null,
           mode === 'write'
             ? jsx(Textarea, {
                 value: body,
@@ -1852,20 +1862,20 @@ function CommentComposer({ repo, number, kind, onPosted }) {
                 },
                 placeholder: 'Leave a comment',
                 maxLength: COMMENT_MAX,
-                rows: 3,
+                rows: 1,
                 size: 'sm',
                 disabled: mutation.isPending,
-                className: 'min-h-16 w-full resize-y rounded-none border-0 bg-transparent text-xs shadow-none focus-visible:ring-0',
+                className: 'w-full resize-none rounded-none border-0 bg-transparent text-xs shadow-none focus-visible:ring-0',
                 'aria-label': `Comment on ${kind}`,
               })
             : jsx('div', {
-                className: 'min-h-16 px-2.5 py-2 text-xs',
+                className: 'max-h-32 overflow-y-auto px-2.5 py-2 text-xs',
                 children: body.trim()
                   ? jsx(MdBlocksView, { blocks: mdBlocks(body), keyPrefix: 'preview' })
                   : jsx('span', { className: 'text-(--ui-text-quaternary)', children: 'Nothing to preview' }),
               }),
           error ? jsx('p', { role: 'alert', className: 'px-2.5 pb-1 text-[11px] text-(--ui-red)', children: String(error) }) : null,
-          jsxs('div', { className: 'flex items-center justify-between gap-2 border-t border-(--ui-stroke-secondary) px-2 py-1.5', children: [
+          expanded ? jsxs('div', { className: 'flex items-center justify-between gap-2 border-t border-(--ui-stroke-secondary) px-2 py-1.5', children: [
             jsx('span', { className: 'text-[10px] text-(--ui-text-quaternary)', children: '⌘↵' }),
             jsx(Button, {
               type: 'submit',
@@ -1876,7 +1886,7 @@ function CommentComposer({ repo, number, kind, onPosted }) {
                 ? jsxs(Fragment, { children: [jsx(GlyphSpinner, { className: 'size-3' }), ' Commenting'] })
                 : 'Comment',
             }),
-          ] }),
+          ] }) : null,
         ] }),
       ] }),
     ],
