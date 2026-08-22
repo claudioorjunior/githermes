@@ -9,9 +9,11 @@ import {
   atom,
   useValue,
   useQuery,
+  useMutation,
   queryClient,
   Button,
   Input,
+  Textarea,
   Badge,
   CopyButton,
   StatusDot,
@@ -51,6 +53,9 @@ const SIDEBAR_NAV_LIT = 'sidebar.nav'
 const TRUNK = new Set(['main', 'master', 'dev', 'develop', 'trunk'])
 const GH = 'PATH=/opt/homebrew/bin:/usr/local/bin:$PATH gh'
 const PR_URL = /https?:\/\/github\.com\/([^/\s]+)\/([^/\s#?]+)\/pull\/(\d+)/i
+const LIVE_POLL_MS = 10_000
+const HEADER_POLL_MS = 60_000
+const COMMENT_MAX = 65_536
 
 let pluginCtx = null
 
@@ -148,6 +153,14 @@ const PANE_WRAP_CSS = `
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+.githermes-pane .gh-detail-root { min-height: 0; }
+.githermes-pane .gh-comment-composer { flex: none; }
+.githermes-pane .gh-comment-composer textarea {
+  field-sizing: content;
+  min-height: 2rem;
+  max-height: 8rem;
+  overflow-y: auto;
 }
 .githermes-pane .gh-detail-tabs { background: var(--ui-editor-surface-background); }
 .githermes-pane .gh-detail-tabs > div { grid-template-columns: repeat(4, minmax(0, 1fr)); }
@@ -265,6 +278,25 @@ export function commentToChatText({ login, verb, timestamp, body, permalink }) {
   return parts.join('\n')
 }
 
+export function livePollInterval(data, opts) {
+  const state = String(data?.state || '').toUpperCase()
+  const terminal = !!(data?.merged || state === 'MERGED' || state === 'CLOSED')
+  if (!terminal) return LIVE_POLL_MS
+  return opts?.header ? HEADER_POLL_MS : false
+}
+
+export function loginOf(login) {
+  if (login == null || login === '—') return ''
+  if (typeof login === 'string') return login.replace(/^@/, '').trim()
+  if (typeof login === 'object' && typeof login.login === 'string') return login.login.replace(/^@/, '').trim()
+  return ''
+}
+
+export function commentBodyOk(body) {
+  const text = String(body || '')
+  return !!text.trim() && text.length <= COMMENT_MAX
+}
+
 function sendCommentToChat(c) {
   const text = commentToChatText(c)
   if (!text.trim()) return
@@ -280,6 +312,30 @@ async function sh(cmd) {
   const r = await host.request('shell.exec', { command: cmd })
   if (r.code !== 0) throw new Error((r.stderr || r.stdout || `exit ${r.code}`).trim().slice(0, 600))
   return (r.stdout || '').trim()
+}
+
+function utf8ToB64(text) {
+  const bytes = new TextEncoder().encode(String(text))
+  let bin = ''
+  for (const b of bytes) bin += String.fromCharCode(b)
+  return btoa(bin)
+}
+
+async function postIssueComment(repo, number, text) {
+  const tag = `ghprs.cmt.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
+  const file = `/tmp/${tag}`
+  const b64 = `/tmp/${tag}.b64`
+  try {
+    const encoded = utf8ToB64(text)
+    await sh(`: > ${sq(b64)}`)
+    for (let i = 0; i < encoded.length; i += 1800) {
+      await sh(`printf %s ${sq(encoded.slice(i, i + 1800))} >> ${sq(b64)}`)
+    }
+    await sh(`{ base64 -d < ${sq(b64)} || base64 -D < ${sq(b64)}; } > ${sq(file)}`)
+    await sh(`${GH} api ${sq(`repos/${repoApiPath(repo)}/issues/${number}/comments`)} --method POST -F ${sq(`body=@${file}`)} --silent`)
+  } finally {
+    sh(`unlink ${sq(file)}; unlink ${sq(b64)}`).catch(() => {})
+  }
 }
 
 async function shJson(cmd) {
@@ -372,6 +428,16 @@ export function projectInlineComments(items) {
   }))
 }
 
+export function projectIssueComments(items) {
+  return (items || []).map(c => ({
+    id: c.id,
+    user: typeof c.user === 'string' ? c.user : (c.user?.login ?? ''),
+    created_at: c.created_at ?? '',
+    html_url: c.html_url ?? '',
+    body: c.body ?? '',
+  }))
+}
+
 async function ghApiBigPaginatedProjected(repo, path, jq) {
   const items = await ghApiBigPaginated(repo, path)
   if (!jq || !items.length) return items
@@ -380,6 +446,9 @@ async function ghApiBigPaginatedProjected(repo, path, jq) {
   // Recognize the two projections used by this plugin; fall back to raw items.
   if (proj.includes('diff_hunk')) {
     return projectInlineComments(items)
+  }
+  if (proj.includes('body_html')) {
+    return projectIssueComments(items)
   }
   if (proj.includes('patch')) {
     return items.map(f => ({
@@ -1234,18 +1303,17 @@ function MergeControl({ repo, number }) {
 }
 
 function Avatar({ login, size = 20 }) {
-  const who = String(login || '').replace(/^@/, '')
-  // Issue #25: deleted/renamed logins 404 on github.com/{login}.png — fall back
-  // to the same neutral circle as unknown authors instead of a broken glyph.
+  const who = loginOf(login)
+  // Issue #25: deleted/renamed logins 404 — fall back to a neutral circle.
   // failedLogin (not a boolean): an instance reused for another login must
   // retry the image instead of staying neutral forever (pullfrog review #40).
   const [failedLogin, setFailedLogin] = useState(null)
-  if (!who || who === '—' || failedLogin === who) {
+  if (!who || failedLogin === who) {
     return jsx('span', { className: 'inline-block rounded-full shrink-0 bg-(--ui-bg-quaternary)', style: { width: size, height: size } })
   }
   return jsx('img', {
     key: who,
-    src: `https://github.com/${encodeURIComponent(who)}.png?size=${size * 2}`,
+    src: `https://avatars.githubusercontent.com/${encodeURIComponent(who)}?s=${size * 2}`,
     alt: who,
     className: 'rounded-full shrink-0 bg-(--ui-bg-quaternary) object-cover',
     style: { width: size, height: size },
@@ -1762,6 +1830,104 @@ function DetailError({ repo, number, title, error, onBack, backLabel }) {
   ] })
 }
 
+function CommentComposer({ repo, number, kind, onPosted }) {
+  const [body, setBody] = useState('')
+  const [mode, setMode] = useState('write')
+  const [focused, setFocused] = useState(false)
+  const inflight = useRef(false)
+  const me = useQuery({
+    queryKey: [ID, 'user'],
+    queryFn: async () => loginOf(await sh(`${GH} api user --jq .login`)),
+    staleTime: 3_600_000,
+  })
+  const mutation = useMutation({
+    mutationFn: async text => {
+      if (!commentBodyOk(text)) throw new Error(`Comment must be between 1 and ${COMMENT_MAX} characters.`)
+      if (!repoOk(repo)) throw new Error('invalid repo')
+      return postIssueComment(repo, number, text)
+    },
+    onSettled: () => { inflight.current = false },
+    onSuccess: async () => {
+      setBody('')
+      setMode('write')
+      await onPosted()
+    },
+  })
+  const error = mutation.error?.message || mutation.error
+  const expanded = focused || !!body.trim() || mode === 'preview' || !!error || mutation.isPending
+  const submit = () => {
+    if (inflight.current || mutation.isPending || !commentBodyOk(body)) return
+    inflight.current = true
+    mutation.mutate(body)
+  }
+  const tab = (id, label) => jsx('button', {
+    type: 'button',
+    onClick: () => setMode(id),
+    className: cn(
+      '-mb-px border-b-2 px-1 pb-1.5 text-[11px]',
+      mode === id
+        ? 'border-(--ui-text-primary) font-medium text-(--ui-text-primary)'
+        : 'border-transparent text-(--ui-text-tertiary) hover:text-(--ui-text-secondary)',
+    ),
+    children: label,
+  })
+  return jsxs('form', {
+    className: 'gh-comment-composer shrink-0 border-t border-(--ui-stroke-secondary) px-3 py-2',
+    'data-slot': 'githermes-comment-composer',
+    onSubmit: e => { e.preventDefault(); submit() },
+    onFocus: () => setFocused(true),
+    onBlur: e => { if (!e.currentTarget.contains(e.relatedTarget)) setFocused(false) },
+    children: [
+      jsxs('div', { className: 'flex items-start gap-2', children: [
+        jsx(Avatar, { login: me.data, size: 22 }),
+        jsxs('div', { className: 'min-w-0 flex-1 overflow-hidden rounded-md border border-(--ui-stroke-secondary)', children: [
+          expanded ? jsxs('div', { className: 'flex items-center gap-3 border-b border-(--ui-stroke-secondary) px-2.5 pt-1.5', children: [
+            tab('write', 'Write'),
+            tab('preview', 'Preview'),
+          ] }) : null,
+          mode === 'write'
+            ? jsx(Textarea, {
+                value: body,
+                onChange: e => setBody(e.target.value),
+                onKeyDown: e => {
+                  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                    e.preventDefault()
+                    submit()
+                  }
+                },
+                placeholder: 'Leave a comment',
+                maxLength: COMMENT_MAX,
+                rows: 1,
+                size: 'sm',
+                disabled: mutation.isPending,
+                className: 'w-full resize-none rounded-none border-0 bg-transparent text-xs shadow-none focus-visible:ring-0',
+                'aria-label': `Comment on ${kind}`,
+              })
+            : jsx('div', {
+                className: 'max-h-32 overflow-y-auto px-2.5 py-2 text-xs',
+                children: body.trim()
+                  ? jsx(MdBlocksView, { blocks: mdBlocks(body), keyPrefix: 'preview' })
+                  : jsx('span', { className: 'text-(--ui-text-quaternary)', children: 'Nothing to preview' }),
+              }),
+          error ? jsx('p', { role: 'alert', className: 'px-2.5 pb-1 text-[11px] text-(--ui-red)', children: String(error) }) : null,
+          expanded ? jsxs('div', { className: 'flex items-center justify-between gap-2 border-t border-(--ui-stroke-secondary) px-2 py-1.5', children: [
+            jsx('span', { className: 'text-[10px] text-(--ui-text-quaternary)', children: '⌘↵' }),
+            jsx(Button, {
+              type: 'submit',
+              size: 'sm',
+              className: 'h-6 px-2 text-[11px]',
+              disabled: mutation.isPending || !commentBodyOk(body),
+              children: mutation.isPending
+                ? jsxs(Fragment, { children: [jsx(GlyphSpinner, { className: 'size-3' }), ' Commenting'] })
+                : 'Comment',
+            }),
+          ] }) : null,
+        ] }),
+      ] }),
+    ],
+  })
+}
+
 function PrDetail({ repo, number, onBack }) {
   const [page, setPage] = useState('conversation')
   const convEndRef = useRef(null)
@@ -1770,15 +1936,16 @@ function PrDetail({ repo, number, onBack }) {
   const headerQ = useQuery({
     queryKey: [ID, 'pr-page', repo, n],
     enabled: !!repo && !!number,
-    queryFn: () => ghApiBig(repo, `pulls/${n}`, '{number,title,state,draft,merged,mergeable,mergeable_state,user:.user.login,created_at,additions,deletions,changed_files,base:.base.ref,head:.head.ref,html_url,body:(.body//""),comments}'),
-    staleTime: 15_000,
-    refetchInterval: 30_000,
+    queryFn: () => ghApiBig(repo, `pulls/${n}`, '{number,title,state,draft,merged,mergeable,mergeable_state,user:.user.login,created_at,additions,deletions,changed_files,base:.base.ref,head:.head.ref,html_url,body:(.body//"")}'),
+    staleTime: 5_000,
+    refetchInterval: q => livePollInterval(q.state.data, { header: true }),
+    refetchIntervalInBackground: true,
   })
   const convQ = useQuery({
     queryKey: [ID, 'pr-conv', repo, n],
     enabled: !!repo && !!number && page === 'conversation',
     queryFn: async () => {
-      const comments = await ghApiBig(repo, `issues/${n}/comments`, '[.[:20][]|{user:.user.login,created_at,html_url,body:(.body//"")}]')
+      const comments = await ghApiBigPaginatedProjected(repo, `issues/${n}/comments?per_page=100`, '[.[]|{user:.user.login,created_at,html_url,body:(.body//""),body_html:(.body_html//"")}]')
       const reviews = await ghApiBig(repo, `pulls/${n}/reviews`, '[.[:15][]|{user:.user.login,state,html_url,body:(.body//""),submitted_at}]')
       // Issue #9: line-level review comments live on their own endpoint; bodies
       // and hunks are big, so same shBig routing as the rest of this query.
@@ -1789,22 +1956,25 @@ function PrDetail({ repo, number, onBack }) {
         threads: groupInlineThreads(inline),
       }
     },
-    staleTime: 15_000,
-    refetchInterval: 30_000,
+    staleTime: 5_000,
+    refetchInterval: () => livePollInterval(headerQ.data),
+    refetchIntervalInBackground: true,
   })
   const filesQ = useQuery({
     queryKey: [ID, 'pr-files', repo, n],
     enabled: !!repo && !!number && page === 'files',
     queryFn: () => ghApiBigPaginatedProjected(repo, `pulls/${n}/files?per_page=100`, '[.[]|{filename,status,additions,deletions,patch:(.patch//"")}]'),
-    staleTime: 15_000,
-    refetchInterval: 30_000,
+    staleTime: 5_000,
+    refetchInterval: () => livePollInterval(headerQ.data),
+    refetchIntervalInBackground: true,
   })
   const commitsQ = useQuery({
     queryKey: [ID, 'pr-commits', repo, n],
     enabled: !!repo && !!number && page === 'commits',
     queryFn: () => ghApiBig(repo, `pulls/${n}/commits`, '[.[:30][]|{sha:.sha[0:7],full:.sha,msg:(.commit.message|sub("\n(?s).*";"")),author:(.commit.author.name//.author.login//"—"),date:(.commit.author.date//"")}]'),
-    staleTime: 15_000,
-    refetchInterval: 30_000,
+    staleTime: 5_000,
+    refetchInterval: () => livePollInterval(headerQ.data),
+    refetchIntervalInBackground: true,
   })
   const checksQ = useQuery({
     queryKey: [ID, 'pr-checks', repo, n],
@@ -1820,8 +1990,9 @@ function PrDetail({ repo, number, onBack }) {
         throw e
       }
     },
-    staleTime: 15_000,
-    refetchInterval: 30_000,
+    staleTime: 5_000,
+    refetchInterval: () => livePollInterval(headerQ.data),
+    refetchIntervalInBackground: true,
   })
 
   // Codex P1: hook must run every render — placed before any early return
@@ -1859,7 +2030,7 @@ function PrDetail({ repo, number, onBack }) {
   ].sort((a, b) => (Date.parse(a.ts || '') || 0) - (Date.parse(b.ts || '') || 0)).map(x => x.el)
 
   return jsxs('div', {
-    className: 'flex h-full min-h-0 flex-col',
+    className: 'gh-detail-root flex h-full min-h-0 flex-col overflow-hidden',
     children: [
       jsx(DetailToolbar, { repo, number: d.number, url, onBack, backLabel: 'Back to pull requests' }),
       jsxs(DetailSummary, {
@@ -1931,24 +2102,43 @@ function PrDetail({ repo, number, onBack }) {
           children: jsx(Codicon, { name: 'arrow-down' }),
         }) : null,
       ] }),
+      jsx('div', {
+        hidden: page !== 'conversation',
+        children: jsx(CommentComposer, {
+          repo,
+          number: n,
+          kind: 'pull request',
+          onPosted: async () => {
+            await Promise.all([
+              queryClient.invalidateQueries({ queryKey: [ID, 'pr-conv', repo, n] }),
+              queryClient.invalidateQueries({ queryKey: [ID, 'pr-page', repo, n] }),
+              queryClient.invalidateQueries({ queryKey: [ID, 'prs', repo] }),
+            ])
+            window.setTimeout(() => convEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }), 0)
+          },
+        }),
+      }),
     ],
   })
 }
 
 function IssueDetail({ repo, number, onBack }) {
+  const n = String(number)
+  const convEndRef = useRef(null)
   const q = useQuery({
-    queryKey: [ID, 'issue-detail', repo, number],
+    queryKey: [ID, 'issue-detail', repo, n],
     enabled: !!repo && !!number,
-    queryFn: () => shJsonBig(`${GH} issue view ${sq(String(number))} --repo ${sq(repo)} --json number,title,body,state,author,createdAt,comments,labels,url`),
-    staleTime: 15_000,
-    refetchInterval: 30_000,
+    queryFn: () => shJsonBig(`${GH} issue view ${sq(n)} --repo ${sq(repo)} --json number,title,body,state,author,createdAt,comments,labels,url`),
+    staleTime: 5_000,
+    refetchInterval: query => livePollInterval(query.state.data, { header: true }),
+    refetchIntervalInBackground: true,
   })
   const d = q.data
   if (q.isLoading) return jsx(DetailLoading, { repo, number, onBack, backLabel: 'Back to issues' })
   if (q.isError) return jsx(DetailError, { repo, number, title: 'Could not load issue', error: q.error, onBack, backLabel: 'Back to issues' })
   if (!d) return null
   return jsxs('div', {
-    className: 'flex h-full min-h-0 flex-col',
+    className: 'gh-detail-root flex h-full min-h-0 flex-col overflow-hidden',
     children: [
       jsx(DetailToolbar, { repo, number: d.number, url: d.url, onBack, backLabel: 'Back to issues' }),
       jsx(DetailSummary, {
@@ -1975,7 +2165,20 @@ function IssueDetail({ repo, number, onBack }) {
               ? jsx('div', { className: 'gh-timeline', children: d.comments.map(c => jsx(CommentCard, { login: c.author?.login, verb: 'commented', time: ago(c.createdAt), timestamp: c.createdAt, body: c.body, permalink: c.url, size: 16 }, c.id || c.url)) })
               : jsx('div', { className: 'rounded-md border border-(--ui-stroke-secondary) px-3 py-4 text-center text-xs text-(--ui-text-quaternary)', children: 'No comments yet.' }),
           ] }),
+          jsx('div', { ref: convEndRef }),
         ] }),
+      }),
+      jsx(CommentComposer, {
+        repo,
+        number: n,
+        kind: 'issue',
+        onPosted: async () => {
+          await Promise.all([
+            queryClient.invalidateQueries({ queryKey: [ID, 'issue-detail', repo, n] }),
+            queryClient.invalidateQueries({ queryKey: [ID, 'issues', repo] }),
+          ])
+          window.setTimeout(() => convEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }), 0)
+        },
       }),
     ],
   })

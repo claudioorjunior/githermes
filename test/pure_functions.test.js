@@ -24,6 +24,10 @@ import {
   repoOk,
   repoApiPath,
   isNoChecksError,
+  livePollInterval,
+  commentBodyOk,
+  loginOf,
+  projectIssueComments,
 } from '../desktop/plugin.js'
 
 test('Issue #13: labelTextColor chooses high-contrast text color based on luminance', () => {
@@ -266,6 +270,63 @@ test('commentToChatText formats quote blocks for chat composer', () => {
   assert.ok(text.includes('> **@octocat** commented · 2026-08-19T00:00:00Z:'))
   assert.ok(text.includes('> Line 1\n> Line 2'))
   assert.ok(text.includes('> https://github.com/owner/repo/pull/1#issuecomment-1'))
+})
+
+test('livePollInterval keeps open resources live and slows terminal headers', () => {
+  assert.equal(livePollInterval({ state: 'OPEN' }), 10_000)
+  assert.equal(livePollInterval({ state: 'CLOSED' }), false)
+  assert.equal(livePollInterval({ state: 'MERGED' }), false)
+  assert.equal(livePollInterval({ merged: true }), false)
+  assert.equal(livePollInterval(null), 10_000)
+  assert.equal(livePollInterval({ state: 'CLOSED' }, { header: true }), 60_000)
+  assert.equal(livePollInterval({ state: 'OPEN' }, { header: true }), 10_000)
+})
+
+test('commentBodyOk rejects empty and oversized comments', () => {
+  assert.equal(commentBodyOk('hello'), true)
+  assert.equal(commentBodyOk('  '), false)
+  assert.equal(commentBodyOk('x'.repeat(65_536)), true)
+  assert.equal(commentBodyOk('x'.repeat(65_537)), false)
+})
+
+test('loginOf coerces REST user objects and strips @', () => {
+  assert.equal(loginOf('octocat'), 'octocat')
+  assert.equal(loginOf('@octocat'), 'octocat')
+  assert.equal(loginOf({ login: 'octocat' }), 'octocat')
+  assert.equal(loginOf(null), '')
+  assert.equal(loginOf('—'), '')
+})
+
+test('projectIssueComments projects user login safely and handles missing fields', () => {
+  const raw = [
+    { id: 10, user: { login: 'alice' }, created_at: '2026-08-22T00:00:00Z', html_url: 'https://github.com/a/b/issues/1#issuecomment-1', body: 'looks good' },
+    { id: 11, user: null, created_at: '2026-08-22T01:00:00Z', html_url: 'https://github.com/a/b/issues/1#issuecomment-2', body: null },
+    { id: 12, user: 'bot', body: 'automated' },
+  ]
+  const res = projectIssueComments(raw)
+  assert.equal(res.length, 3)
+  assert.deepEqual(res[0], {
+    id: 10,
+    user: 'alice',
+    created_at: '2026-08-22T00:00:00Z',
+    html_url: 'https://github.com/a/b/issues/1#issuecomment-1',
+    body: 'looks good',
+  })
+  assert.deepEqual(res[1], {
+    id: 11,
+    user: '',
+    created_at: '2026-08-22T01:00:00Z',
+    html_url: 'https://github.com/a/b/issues/1#issuecomment-2',
+    body: '',
+  })
+  assert.deepEqual(res[2], {
+    id: 12,
+    user: 'bot',
+    created_at: '',
+    html_url: '',
+    body: 'automated',
+  })
+  assert.deepEqual(projectIssueComments(undefined), [])
 })
 
 test('mdBlocks parses GFM markdown into structured AST blocks', () => {
