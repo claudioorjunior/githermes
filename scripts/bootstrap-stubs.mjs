@@ -24,11 +24,9 @@ const files = {
 export const atom = (init) => ({ get: () => init, set: () => {} })
 export const useValue = () => null
 export const useQuery = () => ({ isLoading: false, isError: false, data: null })
-export const useMutation = () => ({ mutate: () => {}, isPending: false, error: null })
 export const queryClient = { invalidateQueries: () => Promise.resolve() }
 export const Button = () => null
 export const Input = () => null
-export const Textarea = () => null
 export const Badge = () => null
 export const CopyButton = () => null
 export const StatusDot = () => null

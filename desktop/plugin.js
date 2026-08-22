@@ -9,11 +9,9 @@ import {
   atom,
   useValue,
   useQuery,
-  useMutation,
   queryClient,
   Button,
   Input,
-  Textarea,
   Badge,
   CopyButton,
   StatusDot,
@@ -1790,37 +1788,48 @@ function DetailError({ repo, number, title, error, onBack, backLabel }) {
 
 function CommentComposer({ repo, number, kind, onPosted }) {
   const [body, setBody] = useState('')
-  const mutation = useMutation({
-    mutationFn: async text => {
-      if (!commentBodyOk(text)) throw new Error(`Comment must be between 1 and ${COMMENT_MAX} characters.`)
-      if (!repoOk(repo)) throw new Error('invalid repo')
-      return sh(`${GH} api ${sq(`repos/${repoApiPath(repo)}/issues/${number}/comments`)} --method POST --raw-field body=${sq(text)} --silent`)
-    },
-    onSuccess: async () => {
+  const [isPending, setIsPending] = useState(false)
+  const [error, setError] = useState(null)
+
+  const handleSubmit = async e => {
+    e.preventDefault()
+    if (isPending || !commentBodyOk(body)) return
+    if (!repoOk(repo)) {
+      setError('invalid repo')
+      return
+    }
+    setIsPending(true)
+    setError(null)
+    try {
+      await sh(`${GH} api ${sq(`repos/${repoApiPath(repo)}/issues/${number}/comments`)} --method POST --raw-field body=${sq(body)} --silent`)
       setBody('')
       await onPosted()
-    },
-  })
-  const error = mutation.error?.message || mutation.error
+    } catch (err) {
+      setError(err?.message || String(err))
+    } finally {
+      setIsPending(false)
+    }
+  }
+
   return jsxs('form', {
     className: 'space-y-2 rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-quaternary) p-3',
-    onSubmit: e => { e.preventDefault(); if (!mutation.isPending && commentBodyOk(body)) mutation.mutate(body) },
+    onSubmit: handleSubmit,
     children: [
       jsx('label', { className: 'text-xs font-semibold text-(--ui-text-secondary)', children: `Add a comment to this ${kind}` }),
-      jsx(Textarea, {
+      jsx('textarea', {
         value: body,
         onChange: e => setBody(e.target.value),
         placeholder: 'Leave a comment',
         maxLength: COMMENT_MAX,
         rows: 4,
-        disabled: mutation.isPending,
-        className: 'w-full resize-y text-xs',
+        disabled: isPending,
+        className: 'w-full resize-y rounded-md border border-(--ui-stroke-secondary) bg-(--ui-editor-surface-background) p-2 text-xs text-(--ui-text-primary) placeholder-(--ui-text-quaternary) focus:border-(--ui-accent) focus:outline-none',
         'aria-label': `Comment on ${kind}`,
       }),
       error ? jsx('p', { role: 'alert', className: 'text-xs text-(--ui-red)', children: String(error) }) : null,
       jsxs('div', { className: 'flex items-center justify-between gap-2', children: [
         jsx('span', { className: 'text-[10px] text-(--ui-text-quaternary)', children: `${body.length}/${COMMENT_MAX}` }),
-        jsx(Button, { type: 'submit', size: 'sm', disabled: mutation.isPending || !commentBodyOk(body), children: mutation.isPending ? 'Commenting…' : 'Comment' }),
+        jsx(Button, { type: 'submit', size: 'sm', disabled: isPending || !commentBodyOk(body), children: isPending ? 'Commenting…' : 'Comment' }),
       ] }),
     ],
   })
