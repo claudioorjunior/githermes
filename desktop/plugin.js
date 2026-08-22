@@ -1185,7 +1185,7 @@ function FilesView({ files, loading, error, onRetry }) {
 }
 
 // Issue #2: Merge PR control (method select, delete-branch checkbox, confirm, error handling)
-function MergeControl({ repo, number, mergeableState, head }) {
+function MergeControl({ repo, number, mergeableState, head, base }) {
   const [open, setOpen] = useState(false)
   const [method, setMethod] = useState('squash')
   const [deleteBranch, setDeleteBranch] = useState(false)
@@ -1207,7 +1207,7 @@ function MergeControl({ repo, number, mergeableState, head }) {
           'Resolve on ',
           jsx('code', { className: 'font-mono', children: head || 'the head branch' }),
           ' (merge or rebase ',
-          jsx('span', { className: 'font-mono', children: 'main' }),
+          jsx('span', { className: 'font-mono', children: base || 'the base branch' }),
           ' locally, then push).',
         ] }),
       ],
@@ -2075,7 +2075,7 @@ function PrDetail({ repo, number, onBack }) {
             d.comments ? jsx(Badge, { variant: 'secondary', className: 'h-5 text-[10px]', children: `${d.comments} comments` }) : null,
           ] }),
           prStateKey(d) === 'open' && !d.draft
-            ? jsx(MergeControl, { repo, number: d.number, mergeableState: d.mergeable_state, head: d.head })
+            ? jsx(MergeControl, { repo, number: d.number, mergeableState: d.mergeable_state, head: d.head, base: d.base })
             : null,
         ],
       }),
