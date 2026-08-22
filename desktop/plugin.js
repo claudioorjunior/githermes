@@ -1792,6 +1792,14 @@ function DetailError({ repo, number, title, error, onBack, backLabel }) {
 
 function CommentComposer({ repo, number, kind, onPosted }) {
   const [body, setBody] = useState('')
+  const me = useQuery({
+    queryKey: [ID, 'user'],
+    queryFn: async () => {
+      const login = await shJson(`${GH} api user --jq .login`)
+      return typeof login === 'string' ? login : ''
+    },
+    staleTime: 3_600_000,
+  })
   const mutation = useMutation({
     mutationFn: async text => {
       if (!commentBodyOk(text)) throw new Error(`Comment must be between 1 and ${COMMENT_MAX} characters.`)
@@ -1804,26 +1812,45 @@ function CommentComposer({ repo, number, kind, onPosted }) {
     },
   })
   const error = mutation.error?.message || mutation.error
+  const submit = () => {
+    if (!mutation.isPending && commentBodyOk(body)) mutation.mutate(body)
+  }
   return jsxs('form', {
-    className: 'gh-comment-composer shrink-0 space-y-2 border-t border-(--ui-stroke-secondary) bg-(--ui-bg-quaternary) p-3',
+    className: 'gh-comment-composer shrink-0 border-t border-(--ui-stroke-secondary) px-3 py-2',
     'data-slot': 'githermes-comment-composer',
-    onSubmit: e => { e.preventDefault(); if (!mutation.isPending && commentBodyOk(body)) mutation.mutate(body) },
+    onSubmit: e => { e.preventDefault(); submit() },
     children: [
-      jsx('label', { className: 'text-xs font-semibold text-(--ui-text-secondary)', children: `Add a comment to this ${kind}` }),
-      jsx(Textarea, {
-        value: body,
-        onChange: e => setBody(e.target.value),
-        placeholder: 'Leave a comment',
-        maxLength: COMMENT_MAX,
-        rows: 3,
-        disabled: mutation.isPending,
-        className: 'w-full resize-y text-xs',
-        'aria-label': `Comment on ${kind}`,
-      }),
-      error ? jsx('p', { role: 'alert', className: 'text-xs text-(--ui-red)', children: String(error) }) : null,
-      jsxs('div', { className: 'flex items-center justify-between gap-2', children: [
-        jsx('span', { className: 'text-[10px] text-(--ui-text-quaternary)', children: `${body.length}/${COMMENT_MAX}` }),
-        jsx(Button, { type: 'submit', size: 'sm', disabled: mutation.isPending || !commentBodyOk(body), children: mutation.isPending ? 'Commenting…' : 'Comment' }),
+      jsxs('div', { className: 'flex items-start gap-2', children: [
+        jsx(Avatar, { login: me.data, size: 22 }),
+        jsxs('div', { className: 'min-w-0 flex-1 space-y-1.5', children: [
+          jsx(Textarea, {
+            value: body,
+            onChange: e => setBody(e.target.value),
+            onKeyDown: e => {
+              if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                e.preventDefault()
+                submit()
+              }
+            },
+            placeholder: 'Leave a comment',
+            maxLength: COMMENT_MAX,
+            rows: 2,
+            size: 'sm',
+            disabled: mutation.isPending,
+            className: 'min-h-0 w-full resize-none text-xs',
+            'aria-label': `Comment on ${kind}`,
+          }),
+          error ? jsx('p', { role: 'alert', className: 'text-[11px] text-(--ui-red)', children: String(error) }) : null,
+          jsx('div', { className: 'flex justify-end', children: jsx(Button, {
+            type: 'submit',
+            size: 'sm',
+            className: 'h-7 px-2.5 text-xs',
+            disabled: mutation.isPending || !commentBodyOk(body),
+            children: mutation.isPending
+              ? jsxs(Fragment, { children: [jsx(GlyphSpinner, { className: 'size-3' }), ' Commenting'] })
+              : 'Comment',
+          }) }),
+        ] }),
       ] }),
     ],
   })
