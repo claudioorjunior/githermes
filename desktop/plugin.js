@@ -2123,6 +2123,7 @@ function PrDetail({ repo, number, onBack }) {
 
 function IssueDetail({ repo, number, onBack }) {
   const n = String(number)
+  const convEndRef = useRef(null)
   const q = useQuery({
     queryKey: [ID, 'issue-detail', repo, n],
     enabled: !!repo && !!number,
@@ -2163,16 +2164,20 @@ function IssueDetail({ repo, number, onBack }) {
               ? jsx('div', { className: 'gh-timeline', children: d.comments.map(c => jsx(CommentCard, { login: c.author?.login, verb: 'commented', time: ago(c.createdAt), timestamp: c.createdAt, body: c.body, permalink: c.url, size: 16 }, c.id || c.url)) })
               : jsx('div', { className: 'rounded-md border border-(--ui-stroke-secondary) px-3 py-4 text-center text-xs text-(--ui-text-quaternary)', children: 'No comments yet.' }),
           ] }),
+          jsx('div', { ref: convEndRef }),
         ] }),
       }),
       jsx(CommentComposer, {
         repo,
         number: n,
         kind: 'issue',
-        onPosted: () => Promise.all([
-          queryClient.invalidateQueries({ queryKey: [ID, 'issue-detail', repo, n] }),
-          queryClient.invalidateQueries({ queryKey: [ID, 'issues', repo] }),
-        ]),
+        onPosted: async () => {
+          await Promise.all([
+            queryClient.invalidateQueries({ queryKey: [ID, 'issue-detail', repo, n] }),
+            queryClient.invalidateQueries({ queryKey: [ID, 'issues', repo] }),
+          ])
+          window.setTimeout(() => convEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }), 0)
+        },
       }),
     ],
   })
