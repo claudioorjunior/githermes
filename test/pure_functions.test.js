@@ -26,6 +26,7 @@ import {
   isNoChecksError,
   livePollInterval,
   commentBodyOk,
+  projectIssueComments,
 } from '../desktop/plugin.js'
 
 test('Issue #13: labelTextColor chooses high-contrast text color based on luminance', () => {
@@ -283,6 +284,35 @@ test('commentBodyOk rejects empty and oversized comments', () => {
   assert.equal(commentBodyOk('  '), false)
   assert.equal(commentBodyOk('x'.repeat(65_536)), true)
   assert.equal(commentBodyOk('x'.repeat(65_537)), false)
+})
+
+test('projectIssueComments projects user login safely and handles missing fields', () => {
+  const raw = [
+    { id: 10, user: { login: 'alice' }, created_at: '2026-08-22T00:00:00Z', html_url: 'https://github.com/a/b/issues/1#issuecomment-1', body: 'looks good' },
+    { id: 11, user: null, created_at: '2026-08-22T01:00:00Z', html_url: 'https://github.com/a/b/issues/1#issuecomment-2', body: null },
+    { id: 12, user: 'bot', body: 'automated' },
+  ]
+  const res = projectIssueComments(raw)
+  assert.equal(res.length, 3)
+  assert.deepEqual(res[0], {
+    user: 'alice',
+    created_at: '2026-08-22T00:00:00Z',
+    html_url: 'https://github.com/a/b/issues/1#issuecomment-1',
+    body: 'looks good',
+  })
+  assert.deepEqual(res[1], {
+    user: '',
+    created_at: '2026-08-22T01:00:00Z',
+    html_url: 'https://github.com/a/b/issues/1#issuecomment-2',
+    body: '',
+  })
+  assert.deepEqual(res[2], {
+    user: 'bot',
+    created_at: '',
+    html_url: '',
+    body: 'automated',
+  })
+  assert.deepEqual(projectIssueComments(undefined), [])
 })
 
 test('mdBlocks parses GFM markdown into structured AST blocks', () => {

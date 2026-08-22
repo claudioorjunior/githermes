@@ -386,6 +386,15 @@ export function projectInlineComments(items) {
   }))
 }
 
+export function projectIssueComments(items) {
+  return (items || []).map(c => ({
+    user: typeof c.user === 'string' ? c.user : (c.user?.login ?? ''),
+    created_at: c.created_at ?? '',
+    html_url: c.html_url ?? '',
+    body: c.body ?? '',
+  }))
+}
+
 async function ghApiBigPaginatedProjected(repo, path, jq) {
   const items = await ghApiBigPaginated(repo, path)
   if (!jq || !items.length) return items
@@ -394,6 +403,9 @@ async function ghApiBigPaginatedProjected(repo, path, jq) {
   // Recognize the two projections used by this plugin; fall back to raw items.
   if (proj.includes('diff_hunk')) {
     return projectInlineComments(items)
+  }
+  if (proj.includes('body_html')) {
+    return projectIssueComments(items)
   }
   if (proj.includes('patch')) {
     return items.map(f => ({
@@ -1782,7 +1794,7 @@ function CommentComposer({ repo, number, kind, onPosted }) {
     mutationFn: async text => {
       if (!commentBodyOk(text)) throw new Error(`Comment must be between 1 and ${COMMENT_MAX} characters.`)
       if (!repoOk(repo)) throw new Error('invalid repo')
-      return shJson(`${GH} api ${sq(`repos/${repoApiPath(repo)}/issues/${number}/comments`)} --method POST --raw-field body=${sq(text)}`)
+      return sh(`${GH} api ${sq(`repos/${repoApiPath(repo)}/issues/${number}/comments`)} --method POST --raw-field body=${sq(text)} --silent`)
     },
     onSuccess: async () => {
       setBody('')
@@ -1831,7 +1843,7 @@ function PrDetail({ repo, number, onBack }) {
     queryKey: [ID, 'pr-conv', repo, n],
     enabled: !!repo && !!number && page === 'conversation',
     queryFn: async () => {
-      const comments = await ghApiBig(repo, `issues/${n}/comments`, '[.[:20][]|{user:.user.login,created_at,html_url,body:(.body//"")}]')
+      const comments = await ghApiBigPaginatedProjected(repo, `issues/${n}/comments?per_page=100`, '[.[]|{user:.user.login,created_at,html_url,body:(.body//""),body_html:(.body_html//"")}]')
       const reviews = await ghApiBig(repo, `pulls/${n}/reviews`, '[.[:15][]|{user:.user.login,state,html_url,body:(.body//""),submitted_at}]')
       // Issue #9: line-level review comments live on their own endpoint; bodies
       // and hunks are big, so same shBig routing as the rest of this query.
