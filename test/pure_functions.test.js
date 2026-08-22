@@ -24,6 +24,8 @@ import {
   repoOk,
   repoApiPath,
   isNoChecksError,
+  livePollInterval,
+  commentBodyOk,
 } from '../desktop/plugin.js'
 
 test('Issue #13: labelTextColor chooses high-contrast text color based on luminance', () => {
@@ -266,6 +268,21 @@ test('commentToChatText formats quote blocks for chat composer', () => {
   assert.ok(text.includes('> **@octocat** commented · 2026-08-19T00:00:00Z:'))
   assert.ok(text.includes('> Line 1\n> Line 2'))
   assert.ok(text.includes('> https://github.com/owner/repo/pull/1#issuecomment-1'))
+})
+
+test('livePollInterval keeps open resources live and stops terminal ones', () => {
+  assert.equal(livePollInterval({ state: 'OPEN' }), 10_000)
+  assert.equal(livePollInterval({ state: 'CLOSED' }), false)
+  assert.equal(livePollInterval({ state: 'MERGED' }), false)
+  assert.equal(livePollInterval({ merged: true }), false)
+  assert.equal(livePollInterval(null), 10_000)
+})
+
+test('commentBodyOk rejects empty and oversized comments', () => {
+  assert.equal(commentBodyOk('hello'), true)
+  assert.equal(commentBodyOk('  '), false)
+  assert.equal(commentBodyOk('x'.repeat(65_536)), true)
+  assert.equal(commentBodyOk('x'.repeat(65_537)), false)
 })
 
 test('mdBlocks parses GFM markdown into structured AST blocks', () => {

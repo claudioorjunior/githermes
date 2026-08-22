@@ -9,9 +9,11 @@ import {
   atom,
   useValue,
   useQuery,
+  useMutation,
   queryClient,
   Button,
   Input,
+  Textarea,
   Badge,
   CopyButton,
   StatusDot,
@@ -51,6 +53,8 @@ const SIDEBAR_NAV_LIT = 'sidebar.nav'
 const TRUNK = new Set(['main', 'master', 'dev', 'develop', 'trunk'])
 const GH = 'PATH=/opt/homebrew/bin:/usr/local/bin:$PATH gh'
 const PR_URL = /https?:\/\/github\.com\/([^/\s]+)\/([^/\s#?]+)\/pull\/(\d+)/i
+const LIVE_POLL_MS = 10_000
+const COMMENT_MAX = 65_536
 
 let pluginCtx = null
 
@@ -263,6 +267,16 @@ export function commentToChatText({ login, verb, timestamp, body, permalink }) {
   const parts = [`> **${who}** ${verb || 'commented'}${when}:`, quoted]
   if (permalink) parts.push('>', `> ${permalink}`)
   return parts.join('\n')
+}
+
+export function livePollInterval(data) {
+  const state = String(data?.state || '').toUpperCase()
+  return data?.merged || state === 'MERGED' || state === 'CLOSED' ? false : LIVE_POLL_MS
+}
+
+export function commentBodyOk(body) {
+  const text = String(body || '')
+  return !!text.trim() && text.length <= COMMENT_MAX
 }
 
 function sendCommentToChat(c) {
@@ -1762,6 +1776,44 @@ function DetailError({ repo, number, title, error, onBack, backLabel }) {
   ] })
 }
 
+function CommentComposer({ repo, number, kind, onPosted }) {
+  const [body, setBody] = useState('')
+  const mutation = useMutation({
+    mutationFn: async text => {
+      if (!commentBodyOk(text)) throw new Error(`Comment must be between 1 and ${COMMENT_MAX} characters.`)
+      if (!repoOk(repo)) throw new Error('invalid repo')
+      return shJson(`${GH} api ${sq(`repos/${repoApiPath(repo)}/issues/${number}/comments`)} --method POST --raw-field body=${sq(text)}`)
+    },
+    onSuccess: async () => {
+      setBody('')
+      await onPosted()
+    },
+  })
+  const error = mutation.error?.message || mutation.error
+  return jsxs('form', {
+    className: 'space-y-2 rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-quaternary) p-3',
+    onSubmit: e => { e.preventDefault(); if (!mutation.isPending && commentBodyOk(body)) mutation.mutate(body) },
+    children: [
+      jsx('label', { className: 'text-xs font-semibold text-(--ui-text-secondary)', children: `Add a comment to this ${kind}` }),
+      jsx(Textarea, {
+        value: body,
+        onChange: e => setBody(e.target.value),
+        placeholder: 'Leave a comment',
+        maxLength: COMMENT_MAX,
+        rows: 4,
+        disabled: mutation.isPending,
+        className: 'w-full resize-y text-xs',
+        'aria-label': `Comment on ${kind}`,
+      }),
+      error ? jsx('p', { role: 'alert', className: 'text-xs text-(--ui-red)', children: String(error) }) : null,
+      jsxs('div', { className: 'flex items-center justify-between gap-2', children: [
+        jsx('span', { className: 'text-[10px] text-(--ui-text-quaternary)', children: `${body.length}/${COMMENT_MAX}` }),
+        jsx(Button, { type: 'submit', size: 'sm', disabled: mutation.isPending || !commentBodyOk(body), children: mutation.isPending ? 'Commenting…' : 'Comment' }),
+      ] }),
+    ],
+  })
+}
+
 function PrDetail({ repo, number, onBack }) {
   const [page, setPage] = useState('conversation')
   const convEndRef = useRef(null)
@@ -1771,8 +1823,9 @@ function PrDetail({ repo, number, onBack }) {
     queryKey: [ID, 'pr-page', repo, n],
     enabled: !!repo && !!number,
     queryFn: () => ghApiBig(repo, `pulls/${n}`, '{number,title,state,draft,merged,mergeable,mergeable_state,user:.user.login,created_at,additions,deletions,changed_files,base:.base.ref,head:.head.ref,html_url,body:(.body//""),comments}'),
-    staleTime: 15_000,
-    refetchInterval: 30_000,
+    staleTime: 5_000,
+    refetchInterval: q => livePollInterval(q.state.data),
+    refetchIntervalInBackground: true,
   })
   const convQ = useQuery({
     queryKey: [ID, 'pr-conv', repo, n],
@@ -1789,22 +1842,25 @@ function PrDetail({ repo, number, onBack }) {
         threads: groupInlineThreads(inline),
       }
     },
-    staleTime: 15_000,
-    refetchInterval: 30_000,
+    staleTime: 5_000,
+    refetchInterval: () => livePollInterval(headerQ.data),
+    refetchIntervalInBackground: true,
   })
   const filesQ = useQuery({
     queryKey: [ID, 'pr-files', repo, n],
     enabled: !!repo && !!number && page === 'files',
     queryFn: () => ghApiBigPaginatedProjected(repo, `pulls/${n}/files?per_page=100`, '[.[]|{filename,status,additions,deletions,patch:(.patch//"")}]'),
-    staleTime: 15_000,
-    refetchInterval: 30_000,
+    staleTime: 5_000,
+    refetchInterval: () => livePollInterval(headerQ.data),
+    refetchIntervalInBackground: true,
   })
   const commitsQ = useQuery({
     queryKey: [ID, 'pr-commits', repo, n],
     enabled: !!repo && !!number && page === 'commits',
     queryFn: () => ghApiBig(repo, `pulls/${n}/commits`, '[.[:30][]|{sha:.sha[0:7],full:.sha,msg:(.commit.message|sub("\n(?s).*";"")),author:(.commit.author.name//.author.login//"—"),date:(.commit.author.date//"")}]'),
-    staleTime: 15_000,
-    refetchInterval: 30_000,
+    staleTime: 5_000,
+    refetchInterval: () => livePollInterval(headerQ.data),
+    refetchIntervalInBackground: true,
   })
   const checksQ = useQuery({
     queryKey: [ID, 'pr-checks', repo, n],
@@ -1820,8 +1876,9 @@ function PrDetail({ repo, number, onBack }) {
         throw e
       }
     },
-    staleTime: 15_000,
-    refetchInterval: 30_000,
+    staleTime: 5_000,
+    refetchInterval: () => livePollInterval(headerQ.data),
+    refetchIntervalInBackground: true,
   })
 
   // Codex P1: hook must run every render — placed before any early return
@@ -1914,6 +1971,19 @@ function PrDetail({ repo, number, onBack }) {
                     : timeline.length
                       ? jsxs(Fragment, { children: timeline })
                       : jsx('div', { className: 'text-[11px] text-(--ui-text-quaternary)', children: 'No comments yet.' }),
+                  jsx(CommentComposer, {
+                    repo,
+                    number: n,
+                    kind: 'pull request',
+                    onPosted: async () => {
+                      await Promise.all([
+                        queryClient.invalidateQueries({ queryKey: [ID, 'pr-conv', repo, n] }),
+                        queryClient.invalidateQueries({ queryKey: [ID, 'pr-page', repo, n] }),
+                        queryClient.invalidateQueries({ queryKey: [ID, 'prs', repo] }),
+                      ])
+                      window.setTimeout(() => convEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }), 0)
+                    },
+                  }),
                   jsx('div', { ref: convEndRef }),
                 ] })
               : page === 'commits'
@@ -1936,12 +2006,14 @@ function PrDetail({ repo, number, onBack }) {
 }
 
 function IssueDetail({ repo, number, onBack }) {
+  const n = String(number)
   const q = useQuery({
-    queryKey: [ID, 'issue-detail', repo, number],
+    queryKey: [ID, 'issue-detail', repo, n],
     enabled: !!repo && !!number,
-    queryFn: () => shJsonBig(`${GH} issue view ${sq(String(number))} --repo ${sq(repo)} --json number,title,body,state,author,createdAt,comments,labels,url`),
-    staleTime: 15_000,
-    refetchInterval: 30_000,
+    queryFn: () => shJsonBig(`${GH} issue view ${sq(n)} --repo ${sq(repo)} --json number,title,body,state,author,createdAt,comments,labels,url`),
+    staleTime: 5_000,
+    refetchInterval: query => livePollInterval(query.state.data),
+    refetchIntervalInBackground: true,
   })
   const d = q.data
   if (q.isLoading) return jsx(DetailLoading, { repo, number, onBack, backLabel: 'Back to issues' })
@@ -1975,6 +2047,15 @@ function IssueDetail({ repo, number, onBack }) {
               ? jsx('div', { className: 'gh-timeline', children: d.comments.map(c => jsx(CommentCard, { login: c.author?.login, verb: 'commented', time: ago(c.createdAt), timestamp: c.createdAt, body: c.body, permalink: c.url, size: 16 }, c.id || c.url)) })
               : jsx('div', { className: 'rounded-md border border-(--ui-stroke-secondary) px-3 py-4 text-center text-xs text-(--ui-text-quaternary)', children: 'No comments yet.' }),
           ] }),
+          jsx(CommentComposer, {
+            repo,
+            number: n,
+            kind: 'issue',
+            onPosted: () => Promise.all([
+              queryClient.invalidateQueries({ queryKey: [ID, 'issue-detail', repo, n] }),
+              queryClient.invalidateQueries({ queryKey: [ID, 'issues', repo] }),
+            ]),
+          }),
         ] }),
       }),
     ],
