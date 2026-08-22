@@ -153,6 +153,8 @@ const PANE_WRAP_CSS = `
   flex-wrap: wrap;
   gap: 6px;
 }
+.githermes-pane .gh-detail-root { min-height: 0; }
+.githermes-pane .gh-comment-composer { flex: none; }
 .githermes-pane .gh-detail-tabs { background: var(--ui-editor-surface-background); }
 .githermes-pane .gh-detail-tabs > div { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .githermes-pane .gh-detail-tabs button,
@@ -1803,7 +1805,8 @@ function CommentComposer({ repo, number, kind, onPosted }) {
   })
   const error = mutation.error?.message || mutation.error
   return jsxs('form', {
-    className: 'shrink-0 space-y-2 border-t border-(--ui-stroke-secondary) bg-(--ui-bg-quaternary) p-3',
+    className: 'gh-comment-composer shrink-0 space-y-2 border-t border-(--ui-stroke-secondary) bg-(--ui-bg-quaternary) p-3',
+    'data-slot': 'githermes-comment-composer',
     onSubmit: e => { e.preventDefault(); if (!mutation.isPending && commentBodyOk(body)) mutation.mutate(body) },
     children: [
       jsx('label', { className: 'text-xs font-semibold text-(--ui-text-secondary)', children: `Add a comment to this ${kind}` }),
@@ -1928,7 +1931,7 @@ function PrDetail({ repo, number, onBack }) {
   ].sort((a, b) => (Date.parse(a.ts || '') || 0) - (Date.parse(b.ts || '') || 0)).map(x => x.el)
 
   return jsxs('div', {
-    className: 'flex h-full min-h-0 flex-col',
+    className: 'gh-detail-root flex h-full min-h-0 flex-col overflow-hidden',
     children: [
       jsx(DetailToolbar, { repo, number: d.number, url, onBack, backLabel: 'Back to pull requests' }),
       jsxs(DetailSummary, {
@@ -2032,7 +2035,7 @@ function IssueDetail({ repo, number, onBack }) {
   if (q.isError) return jsx(DetailError, { repo, number, title: 'Could not load issue', error: q.error, onBack, backLabel: 'Back to issues' })
   if (!d) return null
   return jsxs('div', {
-    className: 'flex h-full min-h-0 flex-col',
+    className: 'gh-detail-root flex h-full min-h-0 flex-col overflow-hidden',
     children: [
       jsx(DetailToolbar, { repo, number: d.number, url: d.url, onBack, backLabel: 'Back to issues' }),
       jsx(DetailSummary, {
