@@ -285,6 +285,13 @@ export function livePollInterval(data, opts) {
   return opts?.header ? HEADER_POLL_MS : false
 }
 
+export function loginOf(login) {
+  if (login == null || login === '—') return ''
+  if (typeof login === 'string') return login.replace(/^@/, '').trim()
+  if (typeof login === 'object' && typeof login.login === 'string') return login.login.replace(/^@/, '').trim()
+  return ''
+}
+
 export function commentBodyOk(body) {
   const text = String(body || '')
   return !!text.trim() && text.length <= COMMENT_MAX
@@ -1295,18 +1302,17 @@ function MergeControl({ repo, number }) {
 }
 
 function Avatar({ login, size = 20 }) {
-  const who = String(login || '').replace(/^@/, '')
-  // Issue #25: deleted/renamed logins 404 on github.com/{login}.png — fall back
-  // to the same neutral circle as unknown authors instead of a broken glyph.
+  const who = loginOf(login)
+  // Issue #25: deleted/renamed logins 404 — fall back to a neutral circle.
   // failedLogin (not a boolean): an instance reused for another login must
   // retry the image instead of staying neutral forever (pullfrog review #40).
   const [failedLogin, setFailedLogin] = useState(null)
-  if (!who || who === '—' || failedLogin === who) {
+  if (!who || failedLogin === who) {
     return jsx('span', { className: 'inline-block rounded-full shrink-0 bg-(--ui-bg-quaternary)', style: { width: size, height: size } })
   }
   return jsx('img', {
     key: who,
-    src: `https://github.com/${encodeURIComponent(who)}.png?size=${size * 2}`,
+    src: `https://avatars.githubusercontent.com/${encodeURIComponent(who)}?s=${size * 2}`,
     alt: who,
     className: 'rounded-full shrink-0 bg-(--ui-bg-quaternary) object-cover',
     style: { width: size, height: size },
@@ -1830,10 +1836,7 @@ function CommentComposer({ repo, number, kind, onPosted }) {
   const inflight = useRef(false)
   const me = useQuery({
     queryKey: [ID, 'user'],
-    queryFn: async () => {
-      const login = await shJson(`${GH} api user --jq .login`)
-      return typeof login === 'string' ? login : ''
-    },
+    queryFn: async () => loginOf(await sh(`${GH} api user --jq .login`)),
     staleTime: 3_600_000,
   })
   const mutation = useMutation({

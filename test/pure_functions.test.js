@@ -26,6 +26,7 @@ import {
   isNoChecksError,
   livePollInterval,
   commentBodyOk,
+  loginOf,
   projectIssueComments,
 } from '../desktop/plugin.js'
 
@@ -286,6 +287,14 @@ test('commentBodyOk rejects empty and oversized comments', () => {
   assert.equal(commentBodyOk('  '), false)
   assert.equal(commentBodyOk('x'.repeat(65_536)), true)
   assert.equal(commentBodyOk('x'.repeat(65_537)), false)
+})
+
+test('loginOf coerces REST user objects and strips @', () => {
+  assert.equal(loginOf('octocat'), 'octocat')
+  assert.equal(loginOf('@octocat'), 'octocat')
+  assert.equal(loginOf({ login: 'octocat' }), 'octocat')
+  assert.equal(loginOf(null), '')
+  assert.equal(loginOf('—'), '')
 })
 
 test('projectIssueComments projects user login safely and handles missing fields', () => {
