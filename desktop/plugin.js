@@ -9,9 +9,11 @@ import {
   atom,
   useValue,
   useQuery,
+  useMutation,
   queryClient,
   Button,
   Input,
+  Textarea,
   Badge,
   CopyButton,
   StatusDot,
@@ -1788,48 +1790,37 @@ function DetailError({ repo, number, title, error, onBack, backLabel }) {
 
 function CommentComposer({ repo, number, kind, onPosted }) {
   const [body, setBody] = useState('')
-  const [isPending, setIsPending] = useState(false)
-  const [error, setError] = useState(null)
-
-  const handleSubmit = async e => {
-    e.preventDefault()
-    if (isPending || !commentBodyOk(body)) return
-    if (!repoOk(repo)) {
-      setError('invalid repo')
-      return
-    }
-    setIsPending(true)
-    setError(null)
-    try {
-      await sh(`${GH} api ${sq(`repos/${repoApiPath(repo)}/issues/${number}/comments`)} --method POST --raw-field body=${sq(body)} --silent`)
+  const mutation = useMutation({
+    mutationFn: async text => {
+      if (!commentBodyOk(text)) throw new Error(`Comment must be between 1 and ${COMMENT_MAX} characters.`)
+      if (!repoOk(repo)) throw new Error('invalid repo')
+      return sh(`${GH} api ${sq(`repos/${repoApiPath(repo)}/issues/${number}/comments`)} --method POST --raw-field body=${sq(text)} --silent`)
+    },
+    onSuccess: async () => {
       setBody('')
       await onPosted()
-    } catch (err) {
-      setError(err?.message || String(err))
-    } finally {
-      setIsPending(false)
-    }
-  }
-
+    },
+  })
+  const error = mutation.error?.message || mutation.error
   return jsxs('form', {
-    className: 'space-y-2 rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-quaternary) p-3',
-    onSubmit: handleSubmit,
+    className: 'shrink-0 space-y-2 border-t border-(--ui-stroke-secondary) bg-(--ui-bg-quaternary) p-3',
+    onSubmit: e => { e.preventDefault(); if (!mutation.isPending && commentBodyOk(body)) mutation.mutate(body) },
     children: [
       jsx('label', { className: 'text-xs font-semibold text-(--ui-text-secondary)', children: `Add a comment to this ${kind}` }),
-      jsx('textarea', {
+      jsx(Textarea, {
         value: body,
         onChange: e => setBody(e.target.value),
         placeholder: 'Leave a comment',
         maxLength: COMMENT_MAX,
-        rows: 4,
-        disabled: isPending,
-        className: 'w-full resize-y rounded-md border border-(--ui-stroke-secondary) bg-(--ui-editor-surface-background) p-2 text-xs text-(--ui-text-primary) placeholder-(--ui-text-quaternary) focus:border-(--ui-accent) focus:outline-none',
+        rows: 3,
+        disabled: mutation.isPending,
+        className: 'w-full resize-y text-xs',
         'aria-label': `Comment on ${kind}`,
       }),
       error ? jsx('p', { role: 'alert', className: 'text-xs text-(--ui-red)', children: String(error) }) : null,
       jsxs('div', { className: 'flex items-center justify-between gap-2', children: [
         jsx('span', { className: 'text-[10px] text-(--ui-text-quaternary)', children: `${body.length}/${COMMENT_MAX}` }),
-        jsx(Button, { type: 'submit', size: 'sm', disabled: isPending || !commentBodyOk(body), children: isPending ? 'Commenting…' : 'Comment' }),
+        jsx(Button, { type: 'submit', size: 'sm', disabled: mutation.isPending || !commentBodyOk(body), children: mutation.isPending ? 'Commenting…' : 'Comment' }),
       ] }),
     ],
   })
@@ -1992,19 +1983,6 @@ function PrDetail({ repo, number, onBack }) {
                     : timeline.length
                       ? jsxs(Fragment, { children: timeline })
                       : jsx('div', { className: 'text-[11px] text-(--ui-text-quaternary)', children: 'No comments yet.' }),
-                  jsx(CommentComposer, {
-                    repo,
-                    number: n,
-                    kind: 'pull request',
-                    onPosted: async () => {
-                      await Promise.all([
-                        queryClient.invalidateQueries({ queryKey: [ID, 'pr-conv', repo, n] }),
-                        queryClient.invalidateQueries({ queryKey: [ID, 'pr-page', repo, n] }),
-                        queryClient.invalidateQueries({ queryKey: [ID, 'prs', repo] }),
-                      ])
-                      window.setTimeout(() => convEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }), 0)
-                    },
-                  }),
                   jsx('div', { ref: convEndRef }),
                 ] })
               : page === 'commits'
@@ -2022,6 +2000,19 @@ function PrDetail({ repo, number, onBack }) {
           children: jsx(Codicon, { name: 'arrow-down' }),
         }) : null,
       ] }),
+      page === 'conversation' ? jsx(CommentComposer, {
+        repo,
+        number: n,
+        kind: 'pull request',
+        onPosted: async () => {
+          await Promise.all([
+            queryClient.invalidateQueries({ queryKey: [ID, 'pr-conv', repo, n] }),
+            queryClient.invalidateQueries({ queryKey: [ID, 'pr-page', repo, n] }),
+            queryClient.invalidateQueries({ queryKey: [ID, 'prs', repo] }),
+          ])
+          window.setTimeout(() => convEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }), 0)
+        },
+      }) : null,
     ],
   })
 }
@@ -2068,16 +2059,16 @@ function IssueDetail({ repo, number, onBack }) {
               ? jsx('div', { className: 'gh-timeline', children: d.comments.map(c => jsx(CommentCard, { login: c.author?.login, verb: 'commented', time: ago(c.createdAt), timestamp: c.createdAt, body: c.body, permalink: c.url, size: 16 }, c.id || c.url)) })
               : jsx('div', { className: 'rounded-md border border-(--ui-stroke-secondary) px-3 py-4 text-center text-xs text-(--ui-text-quaternary)', children: 'No comments yet.' }),
           ] }),
-          jsx(CommentComposer, {
-            repo,
-            number: n,
-            kind: 'issue',
-            onPosted: () => Promise.all([
-              queryClient.invalidateQueries({ queryKey: [ID, 'issue-detail', repo, n] }),
-              queryClient.invalidateQueries({ queryKey: [ID, 'issues', repo] }),
-            ]),
-          }),
         ] }),
+      }),
+      jsx(CommentComposer, {
+        repo,
+        number: n,
+        kind: 'issue',
+        onPosted: () => Promise.all([
+          queryClient.invalidateQueries({ queryKey: [ID, 'issue-detail', repo, n] }),
+          queryClient.invalidateQueries({ queryKey: [ID, 'issues', repo] }),
+        ]),
       }),
     ],
   })
