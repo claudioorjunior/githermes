@@ -53,3 +53,10 @@ test('List filters fetch and expose the same author/label scopes', () => {
   assert.equal((lists.match(/setListFilter\(event, 'author'/g) || []).length, 2)
   assert.equal((lists.match(/setListFilter\(event, 'label'/g) || []).length, 2)
 })
+
+test('Issue #33: checkout copy action is wired only to loaded PR details', () => {
+  const toolbar = source.slice(source.indexOf('function DetailToolbar'), source.indexOf('function DetailSummary'))
+  assert.ok(toolbar.includes("label: 'Copy checkout command'"))
+  assert.ok(toolbar.includes('text: checkoutCommand'))
+  assert.equal((source.match(/checkoutCommand: formatPrCheckoutCmd\(repo, d\.number\)/g) || []).length, 1)
+})

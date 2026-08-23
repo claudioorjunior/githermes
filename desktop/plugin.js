@@ -237,6 +237,10 @@ export function extractPrRef(text) {
   return { repo: `${m[1]}/${m[2].replace(/\.git$/i, '')}`, number: Number(m[3]) }
 }
 
+export function formatPrCheckoutCmd(repo, number) {
+  return `gh pr checkout ${number} --repo ${repo}`
+}
+
 // SDK relativeTime(targetMs: number) — gh returns ISO strings. NaN throws in Intl.
 export function ago(iso) {
   const ms = typeof iso === 'number' ? iso : Date.parse(iso)
@@ -1908,7 +1912,7 @@ function IssueList({ repo, onOpen, query }) {
   })
 }
 
-function DetailToolbar({ repo, number, url, onBack, backLabel }) {
+function DetailToolbar({ repo, number, url, checkoutCommand, onBack, backLabel }) {
   const [owner, name] = String(repo || '').split('/')
   return jsxs('div', {
     className: 'shrink-0 border-b border-(--ui-stroke-secondary) bg-(--ui-editor-surface-background) px-3 py-2 flex items-center gap-1.5 text-xs text-(--ui-text-tertiary)',
@@ -1920,6 +1924,7 @@ function DetailToolbar({ repo, number, url, onBack, backLabel }) {
         jsx('span', { className: 'font-medium text-(--ui-text-primary)', children: name }),
       ] }),
       url ? jsxs('span', { className: 'ml-auto flex shrink-0 items-center gap-0.5', children: [
+        checkoutCommand ? jsx(CopyButton, { appearance: 'icon', buttonSize: 'icon-sm', label: 'Copy checkout command', text: checkoutCommand }) : null,
         jsx(CopyButton, { appearance: 'icon', buttonSize: 'icon-sm', label: 'Copy GitHub URL', text: url }),
         jsx(Button, { variant: 'ghost', size: 'sm', className: 'h-7 w-7 p-0', onClick: () => openExternal(url), 'aria-label': 'Open on GitHub', children: jsx(Codicon, { name: 'link-external' }) }),
       ] }) : null,
@@ -2162,7 +2167,7 @@ function PrDetail({ repo, number, onBack }) {
   return jsxs('div', {
     className: 'gh-detail-root flex h-full min-h-0 flex-col overflow-hidden',
     children: [
-      jsx(DetailToolbar, { repo, number: d.number, url, onBack, backLabel: 'Back to pull requests' }),
+      jsx(DetailToolbar, { repo, number: d.number, url, checkoutCommand: formatPrCheckoutCmd(repo, d.number), onBack, backLabel: 'Back to pull requests' }),
       jsxs(DetailSummary, {
         title: d.title,
         number: d.number,

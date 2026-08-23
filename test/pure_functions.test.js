@@ -15,6 +15,7 @@ import {
   assembleTimeline,
   parseRemote,
   extractPrRef,
+  formatPrCheckoutCmd,
   commentToChatText,
   ago,
   mdBlocks,
@@ -98,6 +99,10 @@ test('extractPrRef extracts repo and PR number from PR URLs', () => {
   )
   assert.equal(extractPrRef('not a url'), null)
   assert.equal(extractPrRef(''), null)
+})
+
+test('Issue #33: formatPrCheckoutCmd returns a runnable gh command', () => {
+  assert.equal(formatPrCheckoutCmd('claudioorjunior/githermes', 33), 'gh pr checkout 33 --repo claudioorjunior/githermes')
 })
 
 test('prStateKey resolves open, draft, merged, closed states', () => {
