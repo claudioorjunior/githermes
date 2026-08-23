@@ -29,6 +29,8 @@ import {
   loginOf,
   projectIssueComments,
   isMergeConflict,
+  deriveChunkOffsets,
+  readChunksConcurrently,
 } from '../desktop/plugin.js'
 
 test('Issue #13: labelTextColor chooses high-contrast text color based on luminance', () => {
@@ -403,4 +405,41 @@ test('Issue #32: isMergeConflict flags only the known-conflict mergeable state',
   assert.ok(!isMergeConflict('behind'))
   assert.ok(!isMergeConflict(null))
   assert.ok(!isMergeConflict(undefined))
+})
+
+test('Issue #28: deriveChunkOffsets covers exact chunk boundaries', () => {
+  assert.deepEqual(deriveChunkOffsets(0), [])
+  assert.deepEqual(deriveChunkOffsets(1), [1])
+  assert.deepEqual(deriveChunkOffsets(3800), [1])
+  assert.deepEqual(deriveChunkOffsets(3801), [1, 3801])
+  assert.deepEqual(deriveChunkOffsets(7600), [1, 3801])
+})
+
+test('Issue #28: readChunksConcurrently bounds overlapping reads and preserves byte order', async () => {
+  const payload = `${'line 😀 with utf8\n'.repeat(80)}tail`
+  const compact = Buffer.from(payload, 'utf8').toString('base64')
+  const wrapped = compact.replace(/.{76}/g, '$&\n')
+  const chunkSize = 97
+  const chunkCount = Math.ceil(wrapped.length / chunkSize)
+  let active = 0
+  let peak = 0
+
+  const output = await readChunksConcurrently(
+    Buffer.byteLength(wrapped),
+    async offset => {
+      active += 1
+      peak = Math.max(peak, active)
+      const index = (offset - 1) / chunkSize
+      await new Promise(resolve => setTimeout(resolve, 12 - (index % 4) * 3))
+      const chunk = wrapped.slice(offset - 1, offset - 1 + chunkSize).trim()
+      active -= 1
+      return chunk
+    },
+    { chunkSize },
+  )
+
+  assert.ok(chunkCount >= 8)
+  assert.ok(peak > 1)
+  assert.ok(peak <= 4)
+  assert.equal(Buffer.from(output.replace(/\s+/g, ''), 'base64').toString('utf8'), payload)
 })

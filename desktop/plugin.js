@@ -368,22 +368,41 @@ async function ghApi(repo, path, jq) {
 // payloads (full comment bodies) can't come back in one call. Route them through
 // a temp file read back in base64 chunks — base64 is pure ASCII, so a chunk
 // boundary can never split a multi-byte char the way raw-byte chunking would.
-// ponytail: N+2 shell.exec round-trips per big read; swap for a single call if
-// the gateway cap is raised or a file-read RPC lands.
+// ponytail: chunk reads still cost N concurrent shell.exec calls; swap for one
+// call if the gateway cap is raised or a file-read RPC lands.
+export function deriveChunkOffsets(byteLength, chunkSize = 3800) {
+  if (!Number.isSafeInteger(byteLength) || byteLength < 0) throw new Error('invalid chunk byte length')
+  if (!Number.isSafeInteger(chunkSize) || chunkSize < 1) throw new Error('invalid chunk size')
+  return Array.from({ length: Math.ceil(byteLength / chunkSize) }, (_, index) => index * chunkSize + 1)
+}
+
+export async function readChunksConcurrently(byteLength, readChunk, options = {}) {
+  const chunkSize = options.chunkSize ?? 3800
+  const offsets = deriveChunkOffsets(byteLength, chunkSize)
+  const concurrency = options.concurrency ?? 4
+  if (!Number.isSafeInteger(concurrency) || concurrency < 1) throw new Error('invalid chunk concurrency')
+  const chunks = new Array(offsets.length)
+  let next = 0
+  async function worker() {
+    while (next < chunks.length) {
+      const index = next++
+      chunks[index] = await readChunk(offsets[index])
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, chunks.length) }, () => worker()))
+  return chunks.join('')
+}
+
 async function shBig(cmd) {
   const tag = `ghprs.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
   const raw = `/tmp/${tag}.raw`, b64 = `/tmp/${tag}.b64`
   try {
     await sh(`${cmd} > ${sq(raw)} && base64 < ${sq(raw)} > ${sq(b64)}`)
-    let out = ''
-    // EOF = empty read, not short chunk: base64 wraps at 76 chars, so a
-    // chunk boundary can land on a wrapping newline that sh()'s trim removes,
-    // making a full 3800-byte read report 3799 and a length-based EOF exit early.
-    for (let off = 1; ; off += 3800) {
-      const chunk = await sh(`tail -c +${off} ${sq(b64)} | head -c 3800`)
-      if (!chunk) break
-      out += chunk
-    }
+    const byteLength = Number(await sh(`wc -c < ${sq(b64)}`))
+    const out = await readChunksConcurrently(
+      byteLength,
+      off => sh(`tail -c +${off} ${sq(b64)} | head -c 3800`),
+    )
     const bin = atob(out.replace(/\s+/g, ''))
     return new TextDecoder('utf-8').decode(Uint8Array.from(bin, c => c.charCodeAt(0)))
   } finally {
