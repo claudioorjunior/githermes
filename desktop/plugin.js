@@ -654,15 +654,37 @@ function inlineFileChip(c) {
   return c.path ? (line ? `${c.path}:${line}` : c.path) : ''
 }
 
-const $repo = atom('')
-// Last session repo auto-applied; lets a manual pick stand until the session repo changes.
-let lastAutoRepo = null
-const $tab = atom('prs')
-const $listQuery = atom('')
-const $prState = atom('open')
-const $issueState = atom('open')
-const $selPr = atom(null)
-const $selIssue = atom(null)
+const GITHUB_SHELL_STORE_KEY = Symbol.for('githermes.github-shell-store.v1')
+
+export function getGitHubShellStore() {
+  let store = globalThis[GITHUB_SHELL_STORE_KEY]
+  if (!store) {
+    store = {
+      repo: atom(''),
+      // Last session repo auto-applied; lets a manual pick stand until it changes.
+      lastAutoRepo: null,
+      tab: atom('prs'),
+      listQuery: atom(''),
+      prState: atom('open'),
+      issueState: atom('open'),
+      selPr: atom(null),
+      selIssue: atom(null),
+    }
+    globalThis[GITHUB_SHELL_STORE_KEY] = store
+  }
+  return store
+}
+
+const githubShellStore = getGitHubShellStore()
+const {
+  repo: $repo,
+  tab: $tab,
+  listQuery: $listQuery,
+  prState: $prState,
+  issueState: $issueState,
+  selPr: $selPr,
+  selIssue: $selIssue,
+} = githubShellStore
 
 function useRepos() {
   return useQuery({
@@ -2242,7 +2264,7 @@ function SessionPrBanner() {
   })
 }
 
-function GitHubPane() {
+function useGitHubShellState() {
   const reposQ = useRepos()
   const repo = useValue($repo)
   const tab = useValue($tab)
@@ -2256,25 +2278,31 @@ function GitHubPane() {
     const sessionRepo = gitQ.data?.repo
     if (sessionRepo) {
       // Follow the session's repo; a manual pick stands until it changes again.
-      if (sessionRepo !== lastAutoRepo) {
-        lastAutoRepo = sessionRepo
+      if (sessionRepo !== githubShellStore.lastAutoRepo) {
+        githubShellStore.lastAutoRepo = sessionRepo
         if (sessionRepo !== repo) $repo.set(sessionRepo)
       }
     } else if (gitQ.data) {
-      lastAutoRepo = null // cwd resolved with no repo: re-arm auto-follow
+      githubShellStore.lastAutoRepo = null // cwd resolved with no repo: re-arm auto-follow
     } else if (!repo && reposQ.data?.length) {
       const saved = pluginCtx?.storage.get('repo')
       $repo.set(saved && reposQ.data.includes(saved) ? saved : reposQ.data[0])
     }
   }, [reposQ.data, gitQ.data, repo])
   useEffect(() => { if (repo) pluginCtx?.storage.set('repo', repo) }, [repo])
-  // Reset only on a real repo change — the pane and the full-page route share
-  // these atoms, so clearing on mount would drop the open detail and search.
+  // Reset only on a real repo change. Both surfaces share these atoms, so
+  // mounting the page or pane must not drop the open detail or search.
   const prevRepo = useRef(repo)
   useEffect(() => {
     if (prevRepo.current !== repo) { $selPr.set(null); $selIssue.set(null); $listQuery.set('') }
     prevRepo.current = repo
   }, [repo])
+
+  return { reposQ, repo, tab, query, selPr, selIssue }
+}
+
+function GitHubPane() {
+  const { reposQ, repo, tab, query, selPr, selIssue } = useGitHubShellState()
 
   const showPr = tab === 'prs' && selPr != null
   const showIssue = tab === 'issues' && selIssue != null
@@ -2320,7 +2348,7 @@ function GitHubPane() {
                 'aria-label': `Search ${tab === 'prs' ? 'pull requests' : 'issues'}`,
                 containerClassName: 'min-w-0 flex-1',
                 inputClassName: 'flex-1',
-                placeholder: `Search ${tab === 'prs' ? 'pull requests' : 'issues'}`,
+                placeholder: 'Filter by title, #number, author, branch or label',
                 value: query,
                 onChange: value => $listQuery.set(value),
               }),
@@ -2340,37 +2368,7 @@ function GitHubPane() {
 }
 
 function GithubPage() {
-  const reposQ = useRepos()
-  const repo = useValue($repo)
-  const tab = useValue($tab)
-  const query = useValue($listQuery)
-  const selPr = useValue($selPr)
-  const selIssue = useValue($selIssue)
-  const cwd = useValue(host.state.cwd)
-  const gitQ = useSessionGit(cwd)
-
-  useEffect(() => {
-    const sessionRepo = gitQ.data?.repo
-    if (sessionRepo) {
-      if (sessionRepo !== lastAutoRepo) {
-        lastAutoRepo = sessionRepo
-        if (sessionRepo !== repo) $repo.set(sessionRepo)
-      }
-    } else if (gitQ.data) {
-      lastAutoRepo = null
-    } else if (!repo && reposQ.data?.length) {
-      const saved = pluginCtx?.storage.get('repo')
-      $repo.set(saved && reposQ.data.includes(saved) ? saved : reposQ.data[0])
-    }
-  }, [reposQ.data, gitQ.data, repo])
-  useEffect(() => { if (repo) pluginCtx?.storage.set('repo', repo) }, [repo])
-  // Reset only on a real repo change — the pane and the full-page route share
-  // these atoms, so clearing on mount would drop the open detail and search.
-  const prevRepo = useRef(repo)
-  useEffect(() => {
-    if (prevRepo.current !== repo) { $selPr.set(null); $selIssue.set(null); $listQuery.set('') }
-    prevRepo.current = repo
-  }, [repo])
+  const { reposQ, repo, tab, query, selPr, selIssue } = useGitHubShellState()
 
   const showPr = tab === 'prs' && selPr != null
   const showIssue = tab === 'issues' && selIssue != null

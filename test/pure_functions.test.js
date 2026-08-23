@@ -187,6 +187,15 @@ test('groupInlineThreads groups comments into root and replies', () => {
   assert.equal(threads[1].replies.length, 0)
 })
 
+test('Issue #26: GitHub shell state survives plugin hot reloads', async () => {
+  const nonce = Date.now()
+  const firstModule = await import(`../desktop/plugin.js?hot-reload-a=${nonce}`)
+  const secondModule = await import(`../desktop/plugin.js?hot-reload-b=${nonce}`)
+
+  assert.equal(typeof firstModule.getGitHubShellStore, 'function')
+  assert.strictEqual(firstModule.getGitHubShellStore(), secondModule.getGitHubShellStore())
+})
+
 test('projectionBody strips only the outer array brackets so projections run (regression: React #31)', () => {
   // A `[...]` array filter must keep its body for recognition; folding it to ''
   // made ghApiBigPaginatedProjected return raw items, leaking a full REST user
