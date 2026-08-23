@@ -11,6 +11,7 @@ import {
   sortChecks,
   matchesListQuery,
   groupInlineThreads,
+  assembleTimeline,
   parseRemote,
   extractPrRef,
   commentToChatText,
@@ -187,6 +188,20 @@ test('groupInlineThreads groups comments into root and replies', () => {
   assert.equal(threads[0].replies.length, 2)
   assert.equal(threads[1].root.id, 4)
   assert.equal(threads[1].replies.length, 0)
+})
+
+test('Issue #29: assembleTimeline merges conversation events chronologically', () => {
+  const reviews = [{ id: 'review', submitted_at: '2026-08-23T12:00:00Z' }]
+  const comments = [{ id: 'comment', created_at: '2026-08-23T10:00:00Z' }]
+  const threads = [{ root: { id: 'thread', created_at: '2026-08-23T11:00:00Z' }, replies: [] }]
+
+  const timeline = assembleTimeline(reviews, comments, threads)
+
+  assert.deepEqual(timeline.map(({ kind, item }) => [kind, item.id ?? item.root.id]), [
+    ['comment', 'comment'],
+    ['thread', 'thread'],
+    ['review', 'review'],
+  ])
 })
 
 test('Issue #26: GitHub shell state survives plugin hot reloads', async () => {

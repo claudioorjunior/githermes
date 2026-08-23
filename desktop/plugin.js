@@ -39,7 +39,7 @@ import {
   PANES_AREA,
   Tip,
 } from '@hermes/plugin-sdk'
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { jsx, jsxs, Fragment } from 'react/jsx-runtime'
 
 const ID = 'githermes'
@@ -665,6 +665,14 @@ export function groupInlineThreads(comments) {
     if (rid !== c.id) byRoot.get(rid)?.replies.push(c)
   }
   return threads.slice(0, 30)
+}
+
+export function assembleTimeline(reviews, comments, threads) {
+  return [
+    ...(Array.isArray(reviews) ? reviews : []).map((item, index) => ({ kind: 'review', item, index, ts: item.submitted_at })),
+    ...(Array.isArray(comments) ? comments : []).map((item, index) => ({ kind: 'comment', item, index, ts: item.created_at })),
+    ...(Array.isArray(threads) ? threads : []).map((item, index) => ({ kind: 'thread', item, index, ts: item.root?.created_at })),
+  ].sort((a, b) => (Date.parse(a.ts || '') || 0) - (Date.parse(b.ts || '') || 0))
 }
 
 // Issue #9: file:line chip; GitHub nulls `line` for outdated comments, fall back to original_line.
@@ -1646,6 +1654,7 @@ export function isLongBody(text) {
 
 function MdBody({ text }) {
   const [open, setOpen] = useState(false)
+  const blocks = useMemo(() => mdBlocks(text), [text])
   if (!text) return jsx('span', { className: 'text-sm text-(--ui-text-quaternary) italic', children: 'No description.' })
   const long = isLongBody(text)
   const collapsed = long && !open
@@ -1655,7 +1664,7 @@ function MdBody({ text }) {
       inert: collapsed || undefined,
       'aria-hidden': collapsed || undefined,
       className: collapsed ? 'max-h-72 overflow-hidden [mask-image:linear-gradient(to_bottom,black_55%,transparent_98%)]' : undefined,
-      children: jsx(MdBlocksView, { blocks: mdBlocks(text), keyPrefix: 'b' }),
+      children: jsx(MdBlocksView, { blocks, keyPrefix: 'b' }),
     }),
     long ? jsx('button', {
       type: 'button',
@@ -1908,6 +1917,7 @@ function CommentComposer({ repo, number, kind, onPosted }) {
   const [body, setBody] = useState('')
   const [mode, setMode] = useState('write')
   const [focused, setFocused] = useState(false)
+  const previewBlocks = useMemo(() => mode === 'preview' ? mdBlocks(body) : null, [body, mode])
   const inflight = useRef(false)
   const me = useQuery({
     queryKey: [ID, 'user'],
@@ -1980,7 +1990,7 @@ function CommentComposer({ repo, number, kind, onPosted }) {
             : jsx('div', {
                 className: 'max-h-32 overflow-y-auto px-2.5 py-2 text-xs',
                 children: body.trim()
-                  ? jsx(MdBlocksView, { blocks: mdBlocks(body), keyPrefix: 'preview' })
+                  ? jsx(MdBlocksView, { blocks: previewBlocks, keyPrefix: 'preview' })
                   : jsx('span', { className: 'text-(--ui-text-quaternary)', children: 'Nothing to preview' }),
               }),
           error ? jsx('p', { role: 'alert', className: 'px-2.5 pb-1 text-[11px] text-(--ui-red)', children: String(error) }) : null,
@@ -2081,6 +2091,21 @@ function PrDetail({ repo, number, onBack }) {
     setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 40)
   }, [convQ.data, page, headerQ.data])
 
+  // Memoizing the JSX array is intentional: relative timestamps update with
+  // conversation refreshes instead of unrelated scroll-state renders.
+  const timeline = useMemo(() => assembleTimeline(
+    convQ.data?.reviews,
+    convQ.data?.comments,
+    convQ.data?.threads,
+  ).map(({ kind, item, index }) => {
+    if (kind === 'review') return jsx(CommentCard, { login: item.user, verb: 'reviewed', time: ago(item.submitted_at), timestamp: item.submitted_at, reviewState: item.state, body: item.body, permalink: item.html_url }, `r-${index}`)
+    if (kind === 'comment') return jsx(CommentCard, { login: item.user, verb: 'commented', time: ago(item.created_at), timestamp: item.created_at, body: item.body, permalink: item.html_url }, `c-${index}`)
+    return jsxs('div', { className: 'gh-timeline', children: [
+      jsx(CommentCard, { login: item.root.user, verb: 'commented on the diff', time: ago(item.root.created_at), timestamp: item.root.created_at, body: item.root.body, permalink: item.root.html_url, fileChip: inlineFileChip(item.root), hunk: item.root.diff_hunk || undefined }, `t-${index}-root`),
+      ...item.replies.map((reply, replyIndex) => jsx('div', { className: 'ml-4', children: jsx(CommentCard, { login: reply.user, verb: 'replied', time: ago(reply.created_at), timestamp: reply.created_at, body: reply.body, permalink: reply.html_url, fileChip: inlineFileChip(reply) }, `t-${index}-${replyIndex}`) })),
+    ] }, `t-${index}`)
+  }), [convQ.data?.reviews, convQ.data?.comments, convQ.data?.threads])
+
   const d = headerQ.data
   if (headerQ.isLoading) return jsx(DetailLoading, { repo, number, onBack, backLabel: 'Back to pull requests' })
   if (headerQ.isError) return jsx(DetailError, { repo, number, title: 'Could not load pull request', error: headerQ.error, onBack, backLabel: 'Back to pull requests' })
@@ -2090,18 +2115,6 @@ function PrDetail({ repo, number, onBack }) {
   const files = Array.isArray(filesQ.data) ? filesQ.data : []
   const commits = Array.isArray(commitsQ.data) ? commitsQ.data : []
   const checks = Array.isArray(checksQ.data) ? checksQ.data : []
-  const comments = convQ.data?.comments || []
-  const reviews = convQ.data?.reviews || []
-  const threads = convQ.data?.threads || []
-  // Issue #9: one chronological timeline of reviews, issue comments, and inline threads.
-  const timeline = [
-    ...reviews.map((r, i) => ({ ts: r.submitted_at, el: jsx(CommentCard, { login: r.user, verb: 'reviewed', time: ago(r.submitted_at), timestamp: r.submitted_at, reviewState: r.state, body: r.body, permalink: r.html_url }, `r-${i}`) })),
-    ...comments.map((c, i) => ({ ts: c.created_at, el: jsx(CommentCard, { login: c.user, verb: 'commented', time: ago(c.created_at), timestamp: c.created_at, body: c.body, permalink: c.html_url }, `c-${i}`) })),
-    ...threads.map((t, i) => ({ ts: t.root.created_at, el: jsxs('div', { className: 'gh-timeline', children: [
-      jsx(CommentCard, { login: t.root.user, verb: 'commented on the diff', time: ago(t.root.created_at), timestamp: t.root.created_at, body: t.root.body, permalink: t.root.html_url, fileChip: inlineFileChip(t.root), hunk: t.root.diff_hunk || undefined }, `t-${i}-root`),
-      ...t.replies.map((r, j) => jsx('div', { className: 'ml-4', children: jsx(CommentCard, { login: r.user, verb: 'replied', time: ago(r.created_at), timestamp: r.created_at, body: r.body, permalink: r.html_url, fileChip: inlineFileChip(r) }, `t-${i}-${j}`) })),
-    ] }, `t-${i}`) })),
-  ].sort((a, b) => (Date.parse(a.ts || '') || 0) - (Date.parse(b.ts || '') || 0)).map(x => x.el)
 
   return jsxs('div', {
     className: 'gh-detail-root flex h-full min-h-0 flex-col overflow-hidden',
