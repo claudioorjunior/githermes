@@ -1859,8 +1859,8 @@ function DetailError({ repo, number, title, error, onBack, backLabel }) {
   ] })
 }
 
-function CommentComposer({ repo, number, kind, onPosted }) {
-  const [body, setBody] = useState('')
+function CommentComposer({ repo, number, kind, onPosted, draft, onDraftChange }) {
+  const [body, setBody] = useState(draft || '')
   const [mode, setMode] = useState('write')
   const [focused, setFocused] = useState(false)
   const inflight = useRef(false)
@@ -1878,6 +1878,7 @@ function CommentComposer({ repo, number, kind, onPosted }) {
     onSettled: () => { inflight.current = false },
     onSuccess: async () => {
       setBody('')
+      onDraftChange?.('')
       setMode('write')
       await onPosted()
     },
@@ -1917,7 +1918,7 @@ function CommentComposer({ repo, number, kind, onPosted }) {
           mode === 'write'
             ? jsx(Textarea, {
                 value: body,
-                onChange: e => setBody(e.target.value),
+                onChange: e => { setBody(e.target.value); onDraftChange?.(e.target.value) },
                 onKeyDown: e => {
                   if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
                     e.preventDefault()
@@ -1959,6 +1960,8 @@ function CommentComposer({ repo, number, kind, onPosted }) {
 
 function PrDetail({ repo, number, onBack }) {
   const [page, setPage] = useState('conversation')
+  // Issue #45: composer draft survives detail-tab switches (state above the tab switch).
+  const [prDraft, setPrDraft] = useState('')
   const convEndRef = useRef(null)
   const [atBottom, setAtBottom] = useState(true)
   const n = String(number)
@@ -2137,6 +2140,10 @@ function PrDetail({ repo, number, onBack }) {
           repo,
           number: n,
           kind: 'pull request',
+          // Issue #45: draft lives above the tab switch, so switching
+          // Conversation ↔ Commits no longer discards unsaved text.
+          draft: prDraft,
+          onDraftChange: setPrDraft,
           onPosted: async () => {
             await Promise.all([
               queryClient.invalidateQueries({ queryKey: [ID, 'pr-conv', repo, n] }),
