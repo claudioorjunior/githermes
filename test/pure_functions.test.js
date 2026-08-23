@@ -9,10 +9,13 @@ import {
   checkTone,
   summarizeChecks,
   sortChecks,
+  parseListQuery,
   matchesListQuery,
   groupInlineThreads,
+  assembleTimeline,
   parseRemote,
   extractPrRef,
+  formatPrCheckoutCmd,
   commentToChatText,
   ago,
   mdBlocks,
@@ -29,6 +32,9 @@ import {
   loginOf,
   projectIssueComments,
   isMergeConflict,
+  deriveChunkOffsets,
+  readChunksConcurrently,
+  listKeyAction,
 } from '../desktop/plugin.js'
 
 test('Issue #13: labelTextColor chooses high-contrast text color based on luminance', () => {
@@ -93,6 +99,10 @@ test('extractPrRef extracts repo and PR number from PR URLs', () => {
   )
   assert.equal(extractPrRef('not a url'), null)
   assert.equal(extractPrRef(''), null)
+})
+
+test('Issue #33: formatPrCheckoutCmd returns a runnable gh command', () => {
+  assert.equal(formatPrCheckoutCmd('claudioorjunior/githermes', 33), 'gh pr checkout 33 --repo claudioorjunior/githermes')
 })
 
 test('prStateKey resolves open, draft, merged, closed states', () => {
@@ -172,6 +182,30 @@ test('matchesListQuery searches list metadata without case sensitivity', () => {
   assert.equal(matchesListQuery(item, 'missing'), false)
 })
 
+test('Issue #30: parseListQuery extracts scoped tokens and free text', () => {
+  assert.deepEqual(parseListQuery('Fix author:OctoCat label:"good first issue"'), {
+    authors: ['octocat'],
+    labels: ['good first issue'],
+    text: 'fix',
+  })
+  assert.deepEqual(parseListQuery('ordinary free text'), { authors: [], labels: [], text: 'ordinary free text' })
+})
+
+test('Issue #30: matchesListQuery scopes tokens and combines them with text', () => {
+  const item = {
+    number: 42,
+    title: 'Fix keyboard navigation for Alice',
+    author: { login: 'Octocat' },
+    labels: [{ name: 'Accessibility' }, { name: 'Good First Issue' }],
+  }
+  assert.equal(matchesListQuery(item, 'author:"OCTO"'), true)
+  assert.equal(matchesListQuery(item, 'label:ACCESS'), true)
+  assert.equal(matchesListQuery(item, 'author:octo label:"good first issue" keyboard'), true)
+  assert.equal(matchesListQuery(item, 'author:alice'), false)
+  assert.equal(matchesListQuery(item, 'label:keyboard'), false)
+  assert.equal(matchesListQuery(item, '#42'), true)
+})
+
 test('groupInlineThreads groups comments into root and replies', () => {
   const comments = [
     { id: 1, body: 'root comment' },
@@ -185,6 +219,29 @@ test('groupInlineThreads groups comments into root and replies', () => {
   assert.equal(threads[0].replies.length, 2)
   assert.equal(threads[1].root.id, 4)
   assert.equal(threads[1].replies.length, 0)
+})
+
+test('Issue #29: assembleTimeline merges conversation events chronologically', () => {
+  const reviews = [{ id: 'review', submitted_at: '2026-08-23T12:00:00Z' }]
+  const comments = [{ id: 'comment', created_at: '2026-08-23T10:00:00Z' }]
+  const threads = [{ root: { id: 'thread', created_at: '2026-08-23T11:00:00Z' }, replies: [] }]
+
+  const timeline = assembleTimeline(reviews, comments, threads)
+
+  assert.deepEqual(timeline.map(({ kind, item }) => [kind, item.id ?? item.root.id]), [
+    ['comment', 'comment'],
+    ['thread', 'thread'],
+    ['review', 'review'],
+  ])
+})
+
+test('Issue #26: GitHub shell state survives plugin hot reloads', async () => {
+  const nonce = Date.now()
+  const firstModule = await import(`../desktop/plugin.js?hot-reload-a=${nonce}`)
+  const secondModule = await import(`../desktop/plugin.js?hot-reload-b=${nonce}`)
+
+  assert.equal(typeof firstModule.getGitHubShellStore, 'function')
+  assert.strictEqual(firstModule.getGitHubShellStore(), secondModule.getGitHubShellStore())
 })
 
 test('projectionBody strips only the outer array brackets so projections run (regression: React #31)', () => {
@@ -273,14 +330,18 @@ test('commentToChatText formats quote blocks for chat composer', () => {
   assert.ok(text.includes('> https://github.com/owner/repo/pull/1#issuecomment-1'))
 })
 
-test('livePollInterval keeps open resources live and slows terminal headers', () => {
-  assert.equal(livePollInterval({ state: 'OPEN' }), 10_000)
+test('Issue #34: livePollInterval tiers visible PR data by volatility', () => {
+  assert.equal(livePollInterval({ state: 'OPEN' }), 30_000)
+  assert.equal(livePollInterval({ state: 'OPEN' }, { kind: 'header' }), 60_000)
+  assert.equal(livePollInterval({ state: 'OPEN' }, { kind: 'slow' }), 120_000)
+  assert.equal(livePollInterval({ state: 'OPEN' }, { kind: 'checks', checks: [{ bucket: 'pending' }] }), 10_000)
+  assert.equal(livePollInterval({ state: 'OPEN' }, { kind: 'checks', checks: [{ bucket: 'fail' }] }), 10_000)
+  assert.equal(livePollInterval({ state: 'OPEN', draft: true }, { kind: 'checks', checks: [{ bucket: 'pending' }] }), 10_000)
+  assert.equal(livePollInterval({ state: 'OPEN' }, { kind: 'checks', checks: [{ bucket: 'pass' }] }), 60_000)
+  assert.equal(livePollInterval({ state: 'OPEN' }, { kind: 'checks', checks: [] }), 60_000)
   assert.equal(livePollInterval({ state: 'CLOSED' }), false)
-  assert.equal(livePollInterval({ state: 'MERGED' }), false)
-  assert.equal(livePollInterval({ merged: true }), false)
-  assert.equal(livePollInterval(null), 10_000)
-  assert.equal(livePollInterval({ state: 'CLOSED' }, { header: true }), 60_000)
-  assert.equal(livePollInterval({ state: 'OPEN' }, { header: true }), 10_000)
+  assert.equal(livePollInterval({ state: 'MERGED' }, { kind: 'checks', checks: [{ bucket: 'pending' }] }), false)
+  assert.equal(livePollInterval({ merged: true }, { kind: 'header' }), false)
 })
 
 test('commentBodyOk rejects empty and oversized comments', () => {
@@ -394,4 +455,59 @@ test('Issue #32: isMergeConflict flags only the known-conflict mergeable state',
   assert.ok(!isMergeConflict('behind'))
   assert.ok(!isMergeConflict(null))
   assert.ok(!isMergeConflict(undefined))
+})
+
+test('Issue #28: deriveChunkOffsets covers exact chunk boundaries', () => {
+  assert.deepEqual(deriveChunkOffsets(0), [])
+  assert.deepEqual(deriveChunkOffsets(1), [1])
+  assert.deepEqual(deriveChunkOffsets(3800), [1])
+  assert.deepEqual(deriveChunkOffsets(3801), [1, 3801])
+  assert.deepEqual(deriveChunkOffsets(7600), [1, 3801])
+})
+
+test('Issue #28: readChunksConcurrently bounds overlapping reads and preserves byte order', async () => {
+  const payload = `${'line 😀 with utf8\n'.repeat(80)}tail`
+  const compact = Buffer.from(payload, 'utf8').toString('base64')
+  const wrapped = compact.replace(/.{76}/g, '$&\n')
+  const chunkSize = 97
+  const chunkCount = Math.ceil(wrapped.length / chunkSize)
+  let active = 0
+  let peak = 0
+
+  const output = await readChunksConcurrently(
+    Buffer.byteLength(wrapped),
+    async offset => {
+      active += 1
+      peak = Math.max(peak, active)
+      const index = (offset - 1) / chunkSize
+      await new Promise(resolve => setTimeout(resolve, 12 - (index % 4) * 3))
+      const chunk = wrapped.slice(offset - 1, offset - 1 + chunkSize).trim()
+      active -= 1
+      return chunk
+    },
+    { chunkSize },
+  )
+
+  assert.ok(chunkCount >= 8)
+  assert.ok(peak > 1)
+  assert.ok(peak <= 4)
+  assert.equal(Buffer.from(output.replace(/\s+/g, ''), 'base64').toString('utf8'), payload)
+})
+
+test('Issue #31: listKeyAction handles only scoped list shortcuts', () => {
+  const div = { tagName: 'DIV', isContentEditable: false }
+  const input = { tagName: 'INPUT', isContentEditable: false }
+  const editable = { tagName: 'SPAN', isContentEditable: true }
+
+  assert.equal(listKeyAction({ key: '/', target: div }), 'focus')
+  assert.equal(listKeyAction({ key: '/', target: input }), null)
+  assert.equal(listKeyAction({ key: '/', target: editable }), null)
+  assert.equal(listKeyAction({ key: '/', target: div, modified: true }), null)
+  assert.equal(listKeyAction({ key: 'Escape', query: 'bug', searchFocused: true }), 'clear')
+  assert.equal(listKeyAction({ key: 'Escape', query: 'bug', searchFocused: true, modified: true }), null)
+  assert.equal(listKeyAction({ key: 'Escape', query: '', searchFocused: true }), null)
+  assert.equal(listKeyAction({ key: 'Enter', searchFocused: true, resultCount: 1 }), 'open')
+  assert.equal(listKeyAction({ key: 'Enter', searchFocused: true, resultCount: 1, modified: true }), null)
+  assert.equal(listKeyAction({ key: 'Enter', searchFocused: true, resultCount: 2 }), null)
+  assert.equal(listKeyAction({ key: 'Enter', searchFocused: false, resultCount: 1 }), null)
 })

@@ -70,8 +70,9 @@ export const Tip = () => null
   },
   'node_modules/react/index.js': `export const useState = (init) => [init, () => {}]
 export const useEffect = () => {}
+export const useMemo = (fn) => fn()
 export const useRef = (init) => ({ current: init })
-export default { useState, useEffect, useRef }
+export default { useState, useEffect, useMemo, useRef }
 `,
   'node_modules/react/jsx-runtime.js': `export const jsx = (type, props, key) => ({ type, props, key })
 export const jsxs = (type, props, key) => ({ type, props, key })

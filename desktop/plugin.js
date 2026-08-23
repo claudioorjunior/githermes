@@ -39,7 +39,7 @@ import {
   PANES_AREA,
   Tip,
 } from '@hermes/plugin-sdk'
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { jsx, jsxs, Fragment } from 'react/jsx-runtime'
 
 const ID = 'githermes'
@@ -53,11 +53,14 @@ const SIDEBAR_NAV_LIT = 'sidebar.nav'
 const TRUNK = new Set(['main', 'master', 'dev', 'develop', 'trunk'])
 const GH = 'PATH=/opt/homebrew/bin:/usr/local/bin:$PATH gh'
 const PR_URL = /https?:\/\/github\.com\/([^/\s]+)\/([^/\s#?]+)\/pull\/(\d+)/i
-const LIVE_POLL_MS = 10_000
+const FAST_POLL_MS = 10_000
+const MEDIUM_POLL_MS = 30_000
 const HEADER_POLL_MS = 60_000
+const SLOW_POLL_MS = 120_000
 const COMMENT_MAX = 65_536
 
 let pluginCtx = null
+const $alwaysVisible = atom(true)
 
 // Scoped wrap fix. Radix ScrollArea wraps children in a display:table div
 // (content-measuring hack) that lets content grow wider than the pane instead of
@@ -110,7 +113,11 @@ const PANE_WRAP_CSS = `
   border-color: color-mix(in srgb, var(--ui-accent) 55%, var(--ui-stroke-secondary));
   background: var(--ui-bg-quinary);
 }
-.githermes-pane .gh-list-row:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 1px; }
+.githermes-pane .gh-list-row:focus-within { outline: 2px solid var(--ui-accent); outline-offset: 1px; }
+.githermes-pane .gh-row-open:focus-visible { outline: none; }
+.githermes-pane .gh-filter-token { cursor: pointer; }
+.githermes-pane .gh-filter-token:hover { text-decoration: underline; }
+.githermes-pane .gh-filter-token:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 1px; }
 .githermes-pane .gh-list-title { font-size: 13px; line-height: 18px; font-weight: 600; }
 .githermes-pane .gh-list-heading { color: var(--ui-text-tertiary); letter-spacing: .04em; text-transform: uppercase; }
 .githermes-pane .gh-status-chip {
@@ -233,6 +240,10 @@ export function extractPrRef(text) {
   return { repo: `${m[1]}/${m[2].replace(/\.git$/i, '')}`, number: Number(m[3]) }
 }
 
+export function formatPrCheckoutCmd(repo, number) {
+  return `gh pr checkout ${number} --repo ${repo}`
+}
+
 // SDK relativeTime(targetMs: number) — gh returns ISO strings. NaN throws in Intl.
 export function ago(iso) {
   const ms = typeof iso === 'number' ? iso : Date.parse(iso)
@@ -281,8 +292,14 @@ export function commentToChatText({ login, verb, timestamp, body, permalink }) {
 export function livePollInterval(data, opts) {
   const state = String(data?.state || '').toUpperCase()
   const terminal = !!(data?.merged || state === 'MERGED' || state === 'CLOSED')
-  if (!terminal) return LIVE_POLL_MS
-  return opts?.header ? HEADER_POLL_MS : false
+  if (terminal) return false
+  if (opts?.kind === 'checks') {
+    const active = Array.isArray(opts.checks) && opts.checks.some(check => ['pending', 'fail'].includes(String(check?.bucket || '').toLowerCase()))
+    return active ? FAST_POLL_MS : HEADER_POLL_MS
+  }
+  if (opts?.kind === 'header') return HEADER_POLL_MS
+  if (opts?.kind === 'slow') return SLOW_POLL_MS
+  return MEDIUM_POLL_MS
 }
 
 export function loginOf(login) {
@@ -368,22 +385,41 @@ async function ghApi(repo, path, jq) {
 // payloads (full comment bodies) can't come back in one call. Route them through
 // a temp file read back in base64 chunks — base64 is pure ASCII, so a chunk
 // boundary can never split a multi-byte char the way raw-byte chunking would.
-// ponytail: N+2 shell.exec round-trips per big read; swap for a single call if
-// the gateway cap is raised or a file-read RPC lands.
+// ponytail: chunk reads still cost N concurrent shell.exec calls; swap for one
+// call if the gateway cap is raised or a file-read RPC lands.
+export function deriveChunkOffsets(byteLength, chunkSize = 3800) {
+  if (!Number.isSafeInteger(byteLength) || byteLength < 0) throw new Error('invalid chunk byte length')
+  if (!Number.isSafeInteger(chunkSize) || chunkSize < 1) throw new Error('invalid chunk size')
+  return Array.from({ length: Math.ceil(byteLength / chunkSize) }, (_, index) => index * chunkSize + 1)
+}
+
+export async function readChunksConcurrently(byteLength, readChunk, options = {}) {
+  const chunkSize = options.chunkSize ?? 3800
+  const offsets = deriveChunkOffsets(byteLength, chunkSize)
+  const concurrency = options.concurrency ?? 4
+  if (!Number.isSafeInteger(concurrency) || concurrency < 1) throw new Error('invalid chunk concurrency')
+  const chunks = new Array(offsets.length)
+  let next = 0
+  async function worker() {
+    while (next < chunks.length) {
+      const index = next++
+      chunks[index] = await readChunk(offsets[index])
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, chunks.length) }, () => worker()))
+  return chunks.join('')
+}
+
 async function shBig(cmd) {
   const tag = `ghprs.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
   const raw = `/tmp/${tag}.raw`, b64 = `/tmp/${tag}.b64`
   try {
     await sh(`${cmd} > ${sq(raw)} && base64 < ${sq(raw)} > ${sq(b64)}`)
-    let out = ''
-    // EOF = empty read, not short chunk: base64 wraps at 76 chars, so a
-    // chunk boundary can land on a wrapping newline that sh()'s trim removes,
-    // making a full 3800-byte read report 3799 and a length-based EOF exit early.
-    for (let off = 1; ; off += 3800) {
-      const chunk = await sh(`tail -c +${off} ${sq(b64)} | head -c 3800`)
-      if (!chunk) break
-      out += chunk
-    }
+    const byteLength = Number(await sh(`wc -c < ${sq(b64)}`))
+    const out = await readChunksConcurrently(
+      byteLength,
+      off => sh(`tail -c +${off} ${sq(b64)} | head -c 3800`),
+    )
     const bin = atob(out.replace(/\s+/g, ''))
     return new TextDecoder('utf-8').decode(Uint8Array.from(bin, c => c.charCodeAt(0)))
   } finally {
@@ -589,15 +625,34 @@ export function numericListQuery(query) {
   return /^\d+$/.test(q) ? Number(q) : null
 }
 
+export function parseListQuery(query) {
+  const authors = [], labels = []
+  const text = String(query || '').replace(
+    /(^|\s)(author|label):(?:"((?:\\.|[^"\\])*)"|(\S+))/gi,
+    (match, lead, field, quoted, bare) => {
+      const value = String(quoted ?? bare).replace(/\\(["\\])/g, '$1').toLowerCase()
+      if (!value) return match
+      const values = field.toLowerCase() === 'author' ? authors : labels
+      values.push(value)
+      return lead
+    },
+  ).trim().replace(/\s+/g, ' ').toLowerCase()
+  return { authors, labels, text }
+}
+
 export function matchesListQuery(item, query) {
-  const raw = String(query || '').trim()
-  if (!raw) return true
+  const { authors, labels, text } = parseListQuery(query)
+  const author = String(item?.author?.login || '').toLowerCase()
+  const itemLabels = Array.isArray(item?.labels) ? item.labels.map(label => String(label?.name || '').toLowerCase()) : []
+  if (authors.some(value => !author.includes(value))) return false
+  if (labels.some(value => !itemLabels.some(label => label.includes(value)))) return false
+  if (!text) return true
   // Codex P2: #42 must not match #142 — exact number before substring
-  if (raw.startsWith('#')) {
-    const n = numericListQuery(raw)
+  if (text.startsWith('#')) {
+    const n = numericListQuery(text)
     if (n != null) return item?.number === n
   }
-  const q = raw.startsWith('#') ? raw.slice(1).trimStart().toLowerCase() : raw.toLowerCase()
+  const q = text.startsWith('#') ? text.slice(1).trimStart() : text
   if (!q) return true
   return [
     item?.number,
@@ -605,8 +660,18 @@ export function matchesListQuery(item, query) {
     item?.title,
     item?.author?.login,
     item?.headRefName,
-    ...(Array.isArray(item?.labels) ? item.labels.map(label => label?.name) : []),
+    ...itemLabels,
   ].some(value => String(value || '').toLowerCase().includes(q))
+}
+
+export function listKeyAction({ key, target, modified = false, query = '', searchFocused = false, resultCount = 0 }) {
+  const tag = String(target?.tagName || '').toUpperCase()
+  const editable = target?.isContentEditable || tag === 'INPUT' || tag === 'TEXTAREA'
+  if (modified) return null
+  if (key === '/' && !editable) return 'focus'
+  if (key === 'Escape' && query && searchFocused) return 'clear'
+  if (key === 'Enter' && searchFocused && resultCount === 1) return 'open'
+  return null
 }
 
 // Lookup is state-agnostic (`gh pr view N` ignores the filter), so a `#N` hit
@@ -648,21 +713,51 @@ export function groupInlineThreads(comments) {
   return threads.slice(0, 30)
 }
 
+export function assembleTimeline(reviews, comments, threads) {
+  return [
+    ...(Array.isArray(reviews) ? reviews : []).map((item, index) => ({ kind: 'review', item, index, ts: item.submitted_at })),
+    ...(Array.isArray(comments) ? comments : []).map((item, index) => ({ kind: 'comment', item, index, ts: item.created_at })),
+    ...(Array.isArray(threads) ? threads : []).map((item, index) => ({ kind: 'thread', item, index, ts: item.root?.created_at })),
+  ].sort((a, b) => (Date.parse(a.ts || '') || 0) - (Date.parse(b.ts || '') || 0))
+}
+
 // Issue #9: file:line chip; GitHub nulls `line` for outdated comments, fall back to original_line.
 function inlineFileChip(c) {
   const line = c.line ?? c.original_line
   return c.path ? (line ? `${c.path}:${line}` : c.path) : ''
 }
 
-const $repo = atom('')
-// Last session repo auto-applied; lets a manual pick stand until the session repo changes.
-let lastAutoRepo = null
-const $tab = atom('prs')
-const $listQuery = atom('')
-const $prState = atom('open')
-const $issueState = atom('open')
-const $selPr = atom(null)
-const $selIssue = atom(null)
+const GITHUB_SHELL_STORE_KEY = Symbol.for('githermes.github-shell-store.v1')
+
+export function getGitHubShellStore() {
+  let store = globalThis[GITHUB_SHELL_STORE_KEY]
+  if (!store) {
+    store = {
+      repo: atom(''),
+      // Last session repo auto-applied; lets a manual pick stand until it changes.
+      lastAutoRepo: null,
+      tab: atom('prs'),
+      listQuery: atom(''),
+      prState: atom('open'),
+      issueState: atom('open'),
+      selPr: atom(null),
+      selIssue: atom(null),
+    }
+    globalThis[GITHUB_SHELL_STORE_KEY] = store
+  }
+  return store
+}
+
+const githubShellStore = getGitHubShellStore()
+const {
+  repo: $repo,
+  tab: $tab,
+  listQuery: $listQuery,
+  prState: $prState,
+  issueState: $issueState,
+  selPr: $selPr,
+  selIssue: $selIssue,
+} = githubShellStore
 
 function useRepos() {
   return useQuery({
@@ -895,15 +990,22 @@ export function labelTextColor(hex) {
   return lum > 140 ? '#000000' : '#ffffff'
 }
 
-function LabelChip({ label, className }) {
+function LabelChip({ label, className, onClick }) {
   if (!label?.name) return null
   const bg = label.color ? `#${String(label.color).replace(/^#/, '')}` : 'var(--ui-bg-quaternary)'
   const color = label.color ? labelTextColor(label.color) : 'var(--ui-text-secondary)'
-  return jsx('span', {
-    className: cn('inline-flex items-center px-1.5 py-px rounded-full text-[10px] font-medium leading-none shrink-0', className),
+  return jsx(onClick ? 'button' : 'span', {
+    type: onClick ? 'button' : undefined,
+    onClick,
+    className: cn('inline-flex items-center px-1.5 py-px rounded-full text-[10px] font-medium leading-none shrink-0', onClick && 'gh-filter-token', className),
     style: { backgroundColor: bg, color, border: '1px solid color-mix(in srgb, currentColor 18%, transparent)' },
     children: label.name,
   })
+}
+
+function setListFilter(event, field, value) {
+  event.stopPropagation()
+  $listQuery.set(`${field}:${JSON.stringify(String(value))}`)
 }
 
 // Issue #12: parse unified diff patch into structured row model
@@ -1225,6 +1327,7 @@ function MergeControl({ repo, number, mergeableState, head, base }) {
       // subcommand; GH_PROMPT_DISABLED=1 suppresses prompts for this call only.
       await sh(`GH_PROMPT_DISABLED=1 ${GH} pr merge ${sq(String(number))} --repo ${sq(repo)} ${flag}${del}`)
       queryClient.invalidateQueries({ queryKey: [ID, 'pr-page', repo, String(number)] })
+      queryClient.invalidateQueries({ queryKey: [ID, 'pr-checks', repo, String(number)] })
       queryClient.invalidateQueries({ queryKey: [ID, 'prs', repo] })
       queryClient.invalidateQueries({ queryKey: [ID, 'session-git'] })
       setOpen(false)
@@ -1605,6 +1708,7 @@ export function isLongBody(text) {
 
 function MdBody({ text }) {
   const [open, setOpen] = useState(false)
+  const blocks = useMemo(() => mdBlocks(text), [text])
   if (!text) return jsx('span', { className: 'text-sm text-(--ui-text-quaternary) italic', children: 'No description.' })
   const long = isLongBody(text)
   const collapsed = long && !open
@@ -1614,7 +1718,7 @@ function MdBody({ text }) {
       inert: collapsed || undefined,
       'aria-hidden': collapsed || undefined,
       className: collapsed ? 'max-h-72 overflow-hidden [mask-image:linear-gradient(to_bottom,black_55%,transparent_98%)]' : undefined,
-      children: jsx(MdBlocksView, { blocks: mdBlocks(text), keyPrefix: 'b' }),
+      children: jsx(MdBlocksView, { blocks, keyPrefix: 'b' }),
     }),
     long ? jsx('button', {
       type: 'button',
@@ -1685,17 +1789,17 @@ function ListEmptyState({ kind, state, repo, query }) {
   ] })
 }
 
-function PrList({ repo, onOpen, query }) {
+function PrList({ repo, onOpen, query, active = true }) {
   const state = useValue($prState)
   const q = useQuery({
     queryKey: [ID, 'prs', repo, state],
-    enabled: !!repo,
-    // Issue #10: +reviewDecision,statusCheckRollup (~580B/row, 30 rows ≈ 17KB)
-    // overflows the 4000-char stdout cap, so the list routes through shBig.
-    queryFn: () => shJsonBig(`${GH} pr list --repo ${sq(repo)} --state ${sq(state)} --limit 30 --json number,title,state,author,updatedAt,url,baseRefName,headRefName,isDraft,additions,deletions,changedFiles,reviewDecision,statusCheckRollup`),
+    enabled: !!repo && active,
+    // Issue #10: expanded list metadata can overflow the stdout cap, so the
+    // list routes through shBig.
+    queryFn: () => shJsonBig(`${GH} pr list --repo ${sq(repo)} --state ${sq(state)} --limit 30 --json number,title,state,author,updatedAt,url,baseRefName,headRefName,isDraft,additions,deletions,changedFiles,reviewDecision,statusCheckRollup,labels`),
     staleTime: 15_000,
-    refetchInterval: LIVE_POLL_MS,
-    refetchIntervalInBackground: true,
+    refetchInterval: MEDIUM_POLL_MS,
+    refetchOnWindowFocus: true,
   })
   const allItems = Array.isArray(q.data) ? q.data : []
   const exactN = numericListQuery(query)
@@ -1725,8 +1829,7 @@ function PrList({ repo, onOpen, query }) {
           jsx(Badge, { variant: 'secondary', className: 'ml-auto h-5 min-w-5 justify-center text-[10px]', children: String(items.length) }),
         ] }),
         ...items.map(pr =>
-        jsxs('button', {
-          type: 'button',
+        jsxs('div', {
           onClick: () => onOpen(pr.number),
           className: 'gh-list-row w-full text-left px-3 py-2.5 flex gap-2.5 items-start',
           children: [
@@ -1734,8 +1837,10 @@ function PrList({ repo, onOpen, query }) {
             jsxs('span', {
               className: 'min-w-0 flex-1',
               children: [
-                jsx(ItemTitle, { title: pr.title, number: pr.number }),
+                jsx('button', { type: 'button', className: 'gh-row-open block w-full text-left', children: jsx(ItemTitle, { title: pr.title, number: pr.number }) }),
                 jsxs('span', { className: 'mt-1 flex flex-wrap items-center gap-x-1.5 text-[10px] text-(--ui-text-tertiary)', children: [
+                  pr.author?.login ? jsx('button', { type: 'button', className: 'gh-filter-token', onClick: event => setListFilter(event, 'author', pr.author?.login), children: `@${pr.author.login}` }) : null,
+                  ...(Array.isArray(pr.labels) ? pr.labels.map(l => jsx(LabelChip, { label: l, onClick: event => setListFilter(event, 'label', l.name) }, l.name || l.id)) : []),
                   jsx('span', { className: 'rounded bg-(--ui-bg-editor) px-1.5 py-0.5 font-mono', children: pr.headRefName || '—' }),
                   jsx(DiffCount, { add: pr.additions, del: pr.deletions }),
                   jsx('span', { children: `${pr.changedFiles ?? 0} files` }),
@@ -1752,16 +1857,16 @@ function PrList({ repo, onOpen, query }) {
   })
 }
 
-function IssueList({ repo, onOpen, query }) {
+function IssueList({ repo, onOpen, query, active = true }) {
   const state = useValue($issueState)
   const q = useQuery({
     queryKey: [ID, 'issues', repo, state],
-    enabled: !!repo,
+    enabled: !!repo && active,
     // Issue #10: same stdout-cap routing as the PR list (busy repos overflow).
     queryFn: () => shJsonBig(`${GH} issue list --repo ${sq(repo)} --state ${sq(state)} --limit 30 --json number,title,state,author,updatedAt,url,labels`),
     staleTime: 15_000,
-    refetchInterval: LIVE_POLL_MS,
-    refetchIntervalInBackground: true,
+    refetchInterval: MEDIUM_POLL_MS,
+    refetchOnWindowFocus: true,
   })
   const allItems = Array.isArray(q.data) ? q.data : []
   const exactN = numericListQuery(query)
@@ -1791,8 +1896,7 @@ function IssueList({ repo, onOpen, query }) {
           jsx(Badge, { variant: 'secondary', className: 'ml-auto h-5 min-w-5 justify-center text-[10px]', children: String(items.length) }),
         ] }),
         ...items.map(it =>
-        jsxs('button', {
-          type: 'button',
+        jsxs('div', {
           onClick: () => onOpen(it.number),
           className: 'gh-list-row w-full text-left px-3 py-2.5 flex gap-2.5 items-start',
           children: [
@@ -1800,11 +1904,14 @@ function IssueList({ repo, onOpen, query }) {
             jsxs('span', {
               className: 'min-w-0 flex-1',
               children: [
-                jsx(ItemTitle, { title: it.title, number: it.number }),
+                jsx('button', { type: 'button', className: 'gh-row-open block w-full text-left', children: jsx(ItemTitle, { title: it.title, number: it.number }) }),
                 Array.isArray(it.labels) && it.labels.length
-                  ? jsx('span', { className: 'mt-1 flex flex-wrap gap-1 items-center', children: it.labels.map(l => jsx(LabelChip, { label: l }, l.name || l.id)) })
+                  ? jsx('span', { className: 'mt-1 flex flex-wrap gap-1 items-center', children: it.labels.map(l => jsx(LabelChip, { label: l, onClick: event => setListFilter(event, 'label', l.name) }, l.name || l.id)) })
                   : null,
-                jsx('span', { className: 'text-[10px] text-(--ui-text-tertiary)', children: `${it.author?.login || '—'} · ${ago(it.updatedAt)}` }),
+                jsxs('span', { className: 'text-[10px] text-(--ui-text-tertiary)', children: [
+                  it.author?.login ? jsx('button', { type: 'button', className: 'gh-filter-token', onClick: event => setListFilter(event, 'author', it.author?.login), children: `@${it.author.login}` }) : '—',
+                  ` · ${ago(it.updatedAt)}`,
+                ] }),
               ],
             }),
             jsx(Codicon, { name: 'chevron-right', className: 'gh-card-arrow mt-1 shrink-0', 'aria-hidden': true }),
@@ -1815,7 +1922,7 @@ function IssueList({ repo, onOpen, query }) {
   })
 }
 
-function DetailToolbar({ repo, number, url, onBack, backLabel }) {
+function DetailToolbar({ repo, number, url, checkoutCommand, onBack, backLabel }) {
   const [owner, name] = String(repo || '').split('/')
   return jsxs('div', {
     className: 'shrink-0 border-b border-(--ui-stroke-secondary) bg-(--ui-editor-surface-background) px-3 py-2 flex items-center gap-1.5 text-xs text-(--ui-text-tertiary)',
@@ -1827,6 +1934,7 @@ function DetailToolbar({ repo, number, url, onBack, backLabel }) {
         jsx('span', { className: 'font-medium text-(--ui-text-primary)', children: name }),
       ] }),
       url ? jsxs('span', { className: 'ml-auto flex shrink-0 items-center gap-0.5', children: [
+        checkoutCommand ? jsx(CopyButton, { appearance: 'icon', buttonSize: 'icon-sm', label: 'Copy checkout command', text: checkoutCommand }) : null,
         jsx(CopyButton, { appearance: 'icon', buttonSize: 'icon-sm', label: 'Copy GitHub URL', text: url }),
         jsx(Button, { variant: 'ghost', size: 'sm', className: 'h-7 w-7 p-0', onClick: () => openExternal(url), 'aria-label': 'Open on GitHub', children: jsx(Codicon, { name: 'link-external' }) }),
       ] }) : null,
@@ -1867,6 +1975,7 @@ function CommentComposer({ repo, number, kind, onPosted }) {
   const [body, setBody] = useState('')
   const [mode, setMode] = useState('write')
   const [focused, setFocused] = useState(false)
+  const previewBlocks = useMemo(() => mode === 'preview' ? mdBlocks(body) : null, [body, mode])
   const inflight = useRef(false)
   const me = useQuery({
     queryKey: [ID, 'user'],
@@ -1939,7 +2048,7 @@ function CommentComposer({ repo, number, kind, onPosted }) {
             : jsx('div', {
                 className: 'max-h-32 overflow-y-auto px-2.5 py-2 text-xs',
                 children: body.trim()
-                  ? jsx(MdBlocksView, { blocks: mdBlocks(body), keyPrefix: 'preview' })
+                  ? jsx(MdBlocksView, { blocks: previewBlocks, keyPrefix: 'preview' })
                   : jsx('span', { className: 'text-(--ui-text-quaternary)', children: 'Nothing to preview' }),
               }),
           error ? jsx('p', { role: 'alert', className: 'px-2.5 pb-1 text-[11px] text-(--ui-red)', children: String(error) }) : null,
@@ -1961,28 +2070,30 @@ function CommentComposer({ repo, number, kind, onPosted }) {
   })
 }
 
-function PrDetail({ repo, number, onBack }) {
+function PrDetail({ repo, number, onBack, active = true }) {
   const [page, setPage] = useState('conversation')
   const convEndRef = useRef(null)
   const [atBottom, setAtBottom] = useState(true)
   const n = String(number)
   const headerQ = useQuery({
     queryKey: [ID, 'pr-page', repo, n],
-    enabled: !!repo && !!number,
+    enabled: !!repo && !!number && active,
     queryFn: () => ghApiBig(repo, `pulls/${n}`, '{number,title,state,draft,merged,mergeable,mergeable_state,user:.user.login,created_at,additions,deletions,changed_files,base:.base.ref,head:.head.ref,html_url,body:(.body//"")}'),
     staleTime: 5_000,
-    refetchInterval: q => livePollInterval(q.state.data, { header: true }),
-    refetchIntervalInBackground: true,
+    refetchInterval: q => livePollInterval(q.state.data, { kind: 'header' }),
+    refetchOnWindowFocus: true,
   })
   const convQ = useQuery({
     queryKey: [ID, 'pr-conv', repo, n],
-    enabled: !!repo && !!number && page === 'conversation',
+    enabled: !!repo && !!number && active && page === 'conversation',
     queryFn: async () => {
-      const comments = await ghApiBigPaginatedProjected(repo, `issues/${n}/comments?per_page=100`, '[.[]|{user:.user.login,created_at,html_url,body:(.body//""),body_html:(.body_html//"")}]')
-      const reviews = await ghApiBig(repo, `pulls/${n}/reviews`, '[.[:15][]|{user:.user.login,state,html_url,body:(.body//""),submitted_at}]')
-      // Issue #9: line-level review comments live on their own endpoint; bodies
-      // and hunks are big, so same shBig routing as the rest of this query.
-      const inline = await ghApiBigPaginatedProjected(repo, `pulls/${n}/comments?per_page=100`, '[.[]|{id,user:.user.login,body:(.body//""),path,line,original_line,in_reply_to_id,created_at,html_url,diff_hunk:(.diff_hunk//"")}]')
+      const [comments, reviews, inline] = await Promise.all([
+        ghApiBigPaginatedProjected(repo, `issues/${n}/comments?per_page=100`, '[.[]|{user:.user.login,created_at,html_url,body:(.body//""),body_html:(.body_html//"")}]'),
+        ghApiBig(repo, `pulls/${n}/reviews`, '[.[:15][]|{user:.user.login,state,html_url,body:(.body//""),submitted_at}]'),
+        // Issue #9: line-level review comments live on their own endpoint; bodies
+        // and hunks are big, so same shBig routing as the rest of this query.
+        ghApiBigPaginatedProjected(repo, `pulls/${n}/comments?per_page=100`, '[.[]|{id,user:.user.login,body:(.body//""),path,line,original_line,in_reply_to_id,created_at,html_url,diff_hunk:(.diff_hunk//"")}]'),
+      ])
       return {
         comments: Array.isArray(comments) ? comments : [],
         reviews: Array.isArray(reviews) ? reviews : [],
@@ -1991,27 +2102,27 @@ function PrDetail({ repo, number, onBack }) {
     },
     staleTime: 5_000,
     refetchInterval: () => livePollInterval(headerQ.data),
-    refetchIntervalInBackground: true,
+    refetchOnWindowFocus: true,
   })
   const filesQ = useQuery({
     queryKey: [ID, 'pr-files', repo, n],
-    enabled: !!repo && !!number && page === 'files',
+    enabled: !!repo && !!number && active && page === 'files',
     queryFn: () => ghApiBigPaginatedProjected(repo, `pulls/${n}/files?per_page=100`, '[.[]|{filename,status,additions,deletions,patch:(.patch//"")}]'),
     staleTime: 5_000,
-    refetchInterval: () => livePollInterval(headerQ.data),
-    refetchIntervalInBackground: true,
+    refetchInterval: () => livePollInterval(headerQ.data, { kind: 'slow' }),
+    refetchOnWindowFocus: true,
   })
   const commitsQ = useQuery({
     queryKey: [ID, 'pr-commits', repo, n],
-    enabled: !!repo && !!number && page === 'commits',
+    enabled: !!repo && !!number && active && page === 'commits',
     queryFn: () => ghApiBig(repo, `pulls/${n}/commits`, '[.[:30][]|{sha:.sha[0:7],full:.sha,msg:(.commit.message|sub("\n(?s).*";"")),author:(.commit.author.name//.author.login//"—"),date:(.commit.author.date//"")}]'),
     staleTime: 5_000,
-    refetchInterval: () => livePollInterval(headerQ.data),
-    refetchIntervalInBackground: true,
+    refetchInterval: () => livePollInterval(headerQ.data, { kind: 'slow' }),
+    refetchOnWindowFocus: true,
   })
   const checksQ = useQuery({
     queryKey: [ID, 'pr-checks', repo, n],
-    enabled: !!repo && !!number && (page === 'checks' || page === 'conversation'),
+    enabled: !!repo && !!number && active && (page === 'checks' || page === 'conversation'),
     queryFn: async () => {
       try {
         const rows = await shJsonLoose(`${GH} pr checks ${sq(n)} --repo ${sq(repo)} --json name,state,bucket,link`)
@@ -2024,8 +2135,8 @@ function PrDetail({ repo, number, onBack }) {
       }
     },
     staleTime: 5_000,
-    refetchInterval: () => livePollInterval(headerQ.data),
-    refetchIntervalInBackground: true,
+    refetchInterval: q => livePollInterval(headerQ.data, { kind: 'checks', checks: q.state.data }),
+    refetchOnWindowFocus: true,
   })
 
   // Codex P1: hook must run every render — placed before any early return
@@ -2040,6 +2151,21 @@ function PrDetail({ repo, number, onBack }) {
     setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 40)
   }, [convQ.data, page, headerQ.data])
 
+  // Memoizing the JSX array is intentional: relative timestamps update with
+  // conversation refreshes instead of unrelated scroll-state renders.
+  const timeline = useMemo(() => assembleTimeline(
+    convQ.data?.reviews,
+    convQ.data?.comments,
+    convQ.data?.threads,
+  ).map(({ kind, item, index }) => {
+    if (kind === 'review') return jsx(CommentCard, { login: item.user, verb: 'reviewed', time: ago(item.submitted_at), timestamp: item.submitted_at, reviewState: item.state, body: item.body, permalink: item.html_url }, `r-${index}`)
+    if (kind === 'comment') return jsx(CommentCard, { login: item.user, verb: 'commented', time: ago(item.created_at), timestamp: item.created_at, body: item.body, permalink: item.html_url }, `c-${index}`)
+    return jsxs('div', { className: 'gh-timeline', children: [
+      jsx(CommentCard, { login: item.root.user, verb: 'commented on the diff', time: ago(item.root.created_at), timestamp: item.root.created_at, body: item.root.body, permalink: item.root.html_url, fileChip: inlineFileChip(item.root), hunk: item.root.diff_hunk || undefined }, `t-${index}-root`),
+      ...item.replies.map((reply, replyIndex) => jsx('div', { className: 'ml-4', children: jsx(CommentCard, { login: reply.user, verb: 'replied', time: ago(reply.created_at), timestamp: reply.created_at, body: reply.body, permalink: reply.html_url, fileChip: inlineFileChip(reply) }, `t-${index}-${replyIndex}`) })),
+    ] }, `t-${index}`)
+  }), [convQ.data?.reviews, convQ.data?.comments, convQ.data?.threads])
+
   const d = headerQ.data
   if (headerQ.isLoading) return jsx(DetailLoading, { repo, number, onBack, backLabel: 'Back to pull requests' })
   if (headerQ.isError) return jsx(DetailError, { repo, number, title: 'Could not load pull request', error: headerQ.error, onBack, backLabel: 'Back to pull requests' })
@@ -2049,23 +2175,11 @@ function PrDetail({ repo, number, onBack }) {
   const files = Array.isArray(filesQ.data) ? filesQ.data : []
   const commits = Array.isArray(commitsQ.data) ? commitsQ.data : []
   const checks = Array.isArray(checksQ.data) ? checksQ.data : []
-  const comments = convQ.data?.comments || []
-  const reviews = convQ.data?.reviews || []
-  const threads = convQ.data?.threads || []
-  // Issue #9: one chronological timeline of reviews, issue comments, and inline threads.
-  const timeline = [
-    ...reviews.map((r, i) => ({ ts: r.submitted_at, el: jsx(CommentCard, { login: r.user, verb: 'reviewed', time: ago(r.submitted_at), timestamp: r.submitted_at, reviewState: r.state, body: r.body, permalink: r.html_url }, `r-${i}`) })),
-    ...comments.map((c, i) => ({ ts: c.created_at, el: jsx(CommentCard, { login: c.user, verb: 'commented', time: ago(c.created_at), timestamp: c.created_at, body: c.body, permalink: c.html_url }, `c-${i}`) })),
-    ...threads.map((t, i) => ({ ts: t.root.created_at, el: jsxs('div', { className: 'gh-timeline', children: [
-      jsx(CommentCard, { login: t.root.user, verb: 'commented on the diff', time: ago(t.root.created_at), timestamp: t.root.created_at, body: t.root.body, permalink: t.root.html_url, fileChip: inlineFileChip(t.root), hunk: t.root.diff_hunk || undefined }, `t-${i}-root`),
-      ...t.replies.map((r, j) => jsx('div', { className: 'ml-4', children: jsx(CommentCard, { login: r.user, verb: 'replied', time: ago(r.created_at), timestamp: r.created_at, body: r.body, permalink: r.html_url, fileChip: inlineFileChip(r) }, `t-${i}-${j}`) })),
-    ] }, `t-${i}`) })),
-  ].sort((a, b) => (Date.parse(a.ts || '') || 0) - (Date.parse(b.ts || '') || 0)).map(x => x.el)
 
   return jsxs('div', {
     className: 'gh-detail-root flex h-full min-h-0 flex-col overflow-hidden',
     children: [
-      jsx(DetailToolbar, { repo, number: d.number, url, onBack, backLabel: 'Back to pull requests' }),
+      jsx(DetailToolbar, { repo, number: d.number, url, checkoutCommand: formatPrCheckoutCmd(repo, d.number), onBack, backLabel: 'Back to pull requests' }),
       jsxs(DetailSummary, {
         title: d.title,
         number: d.number,
@@ -2155,16 +2269,16 @@ function PrDetail({ repo, number, onBack }) {
   })
 }
 
-function IssueDetail({ repo, number, onBack }) {
+function IssueDetail({ repo, number, onBack, active = true }) {
   const n = String(number)
   const convEndRef = useRef(null)
   const q = useQuery({
     queryKey: [ID, 'issue-detail', repo, n],
-    enabled: !!repo && !!number,
+    enabled: !!repo && !!number && active,
     queryFn: () => shJsonBig(`${GH} issue view ${sq(n)} --repo ${sq(repo)} --json number,title,body,state,author,createdAt,comments,labels,url`),
     staleTime: 5_000,
-    refetchInterval: query => livePollInterval(query.state.data, { header: true }),
-    refetchIntervalInBackground: true,
+    refetchInterval: query => livePollInterval(query.state.data),
+    refetchOnWindowFocus: true,
   })
   const d = q.data
   if (q.isLoading) return jsx(DetailLoading, { repo, number, onBack, backLabel: 'Back to issues' })
@@ -2242,7 +2356,7 @@ function SessionPrBanner() {
   })
 }
 
-function GitHubPane() {
+function useGitHubShellState() {
   const reposQ = useRepos()
   const repo = useValue($repo)
   const tab = useValue($tab)
@@ -2256,31 +2370,61 @@ function GitHubPane() {
     const sessionRepo = gitQ.data?.repo
     if (sessionRepo) {
       // Follow the session's repo; a manual pick stands until it changes again.
-      if (sessionRepo !== lastAutoRepo) {
-        lastAutoRepo = sessionRepo
+      if (sessionRepo !== githubShellStore.lastAutoRepo) {
+        githubShellStore.lastAutoRepo = sessionRepo
         if (sessionRepo !== repo) $repo.set(sessionRepo)
       }
     } else if (gitQ.data) {
-      lastAutoRepo = null // cwd resolved with no repo: re-arm auto-follow
+      githubShellStore.lastAutoRepo = null // cwd resolved with no repo: re-arm auto-follow
     } else if (!repo && reposQ.data?.length) {
       const saved = pluginCtx?.storage.get('repo')
       $repo.set(saved && reposQ.data.includes(saved) ? saved : reposQ.data[0])
     }
   }, [reposQ.data, gitQ.data, repo])
   useEffect(() => { if (repo) pluginCtx?.storage.set('repo', repo) }, [repo])
-  // Reset only on a real repo change — the pane and the full-page route share
-  // these atoms, so clearing on mount would drop the open detail and search.
+  // Reset only on a real repo change. Both surfaces share these atoms, so
+  // mounting the page or pane must not drop the open detail or search.
   const prevRepo = useRef(repo)
   useEffect(() => {
     if (prevRepo.current !== repo) { $selPr.set(null); $selIssue.set(null); $listQuery.set('') }
     prevRepo.current = repo
   }, [repo])
 
+  return { reposQ, repo, tab, query, selPr, selIssue }
+}
+
+function useListKeyboardFlow(query) {
+  const searchRef = useRef(null)
+  const onKeyDown = event => {
+    const rows = event.key === 'Enter' ? event.currentTarget.querySelectorAll('.gh-list-row') : []
+    const action = listKeyAction({
+      key: event.key,
+      target: event.target,
+      modified: event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey,
+      query,
+      searchFocused: event.target === searchRef.current,
+      resultCount: rows.length,
+    })
+    if (!action) return
+    event.preventDefault()
+    event.stopPropagation()
+    if (action === 'focus') searchRef.current?.focus()
+    else if (action === 'clear') { $listQuery.set(''); searchRef.current?.blur() }
+    else rows[0]?.click()
+  }
+  return { searchRef, onKeyDown }
+}
+
+function GitHubPane() {
+  const { reposQ, repo, tab, query, selPr, selIssue } = useGitHubShellState()
+  const paneVisible = useValue(typeof host.paneVisibility === 'function' ? host.paneVisibility(PANE_ID) : $alwaysVisible)
+  const keyboard = useListKeyboardFlow(query)
+
   const showPr = tab === 'prs' && selPr != null
   const showIssue = tab === 'issues' && selIssue != null
 
-  if (showPr) return jsx(PrDetail, { repo, number: selPr, onBack: () => $selPr.set(null) })
-  if (showIssue) return jsx(IssueDetail, { repo, number: selIssue, onBack: () => $selIssue.set(null) })
+  if (showPr) return jsx(PrDetail, { repo, number: selPr, active: paneVisible, onBack: () => $selPr.set(null) })
+  if (showIssue) return jsx(IssueDetail, { repo, number: selIssue, active: paneVisible, onBack: () => $selIssue.set(null) })
 
   if (reposQ.isError) {
     return jsx('div', { className: 'p-6', children: jsx(ErrorState, {
@@ -2292,6 +2436,7 @@ function GitHubPane() {
 
   return jsxs('div', {
     className: 'flex h-full flex-col min-h-0',
+    onKeyDown: keyboard.onKeyDown,
     children: [
       jsx(SessionPrBanner, {}),
       jsxs('div', {
@@ -2320,9 +2465,10 @@ function GitHubPane() {
                 'aria-label': `Search ${tab === 'prs' ? 'pull requests' : 'issues'}`,
                 containerClassName: 'min-w-0 flex-1',
                 inputClassName: 'flex-1',
-                placeholder: `Search ${tab === 'prs' ? 'pull requests' : 'issues'}`,
+                placeholder: 'Filter by title, #number, author, branch or label',
                 value: query,
                 onChange: value => $listQuery.set(value),
+                inputRef: keyboard.searchRef,
               }),
               jsx(StateSelect, { kind: tab }),
             ],
@@ -2332,45 +2478,16 @@ function GitHubPane() {
       jsx('div', {
         className: 'flex-1 min-h-0',
         children: tab === 'prs'
-          ? jsx(PrList, { repo, query, onOpen: n => $selPr.set(n) })
-          : jsx(IssueList, { repo, query, onOpen: n => $selIssue.set(n) }),
+          ? jsx(PrList, { repo, query, active: paneVisible, onOpen: n => $selPr.set(n) })
+          : jsx(IssueList, { repo, query, active: paneVisible, onOpen: n => $selIssue.set(n) }),
       }),
     ],
   })
 }
 
 function GithubPage() {
-  const reposQ = useRepos()
-  const repo = useValue($repo)
-  const tab = useValue($tab)
-  const query = useValue($listQuery)
-  const selPr = useValue($selPr)
-  const selIssue = useValue($selIssue)
-  const cwd = useValue(host.state.cwd)
-  const gitQ = useSessionGit(cwd)
-
-  useEffect(() => {
-    const sessionRepo = gitQ.data?.repo
-    if (sessionRepo) {
-      if (sessionRepo !== lastAutoRepo) {
-        lastAutoRepo = sessionRepo
-        if (sessionRepo !== repo) $repo.set(sessionRepo)
-      }
-    } else if (gitQ.data) {
-      lastAutoRepo = null
-    } else if (!repo && reposQ.data?.length) {
-      const saved = pluginCtx?.storage.get('repo')
-      $repo.set(saved && reposQ.data.includes(saved) ? saved : reposQ.data[0])
-    }
-  }, [reposQ.data, gitQ.data, repo])
-  useEffect(() => { if (repo) pluginCtx?.storage.set('repo', repo) }, [repo])
-  // Reset only on a real repo change — the pane and the full-page route share
-  // these atoms, so clearing on mount would drop the open detail and search.
-  const prevRepo = useRef(repo)
-  useEffect(() => {
-    if (prevRepo.current !== repo) { $selPr.set(null); $selIssue.set(null); $listQuery.set('') }
-    prevRepo.current = repo
-  }, [repo])
+  const { reposQ, repo, tab, query, selPr, selIssue } = useGitHubShellState()
+  const keyboard = useListKeyboardFlow(query)
 
   const showPr = tab === 'prs' && selPr != null
   const showIssue = tab === 'issues' && selIssue != null
@@ -2387,6 +2504,7 @@ function GithubPage() {
 
   return jsxs('div', {
     className: 'flex h-full min-h-0 flex-col',
+    onKeyDown: keyboard.onKeyDown,
     children: [
       jsxs('div', {
         className: 'shrink-0 border-b border-(--ui-stroke-secondary) bg-(--ui-editor-surface-background)',
@@ -2423,6 +2541,7 @@ function GithubPage() {
                     placeholder: 'Filter by title, #number, author, branch or label',
                     value: query,
                     onChange: value => $listQuery.set(value),
+                    inputRef: keyboard.searchRef,
                   }),
                   jsx(StateSelect, { kind: tab }),
                 ],
