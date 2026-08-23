@@ -13,6 +13,12 @@ test('Issue #26: pane and page share one repository-selection shell', () => {
   assert.equal((source.match(/placeholder: 'Filter by title, #number, author, branch or label'/g) || []).length, 2)
 })
 
+test('Issue #27: conversation sources start together', () => {
+  const detail = source.slice(source.indexOf('function PrDetail'), source.indexOf('function IssueDetail'))
+  assert.ok(detail.includes('const [comments, reviews, inline] = await Promise.all(['))
+  assert.equal((detail.match(/ghApiBig(?:PaginatedProjected)?\(repo,/g) || []).length, 6)
+})
+
 test('Issue #29: Markdown parsing is memoized at the component top level', () => {
   assert.ok(/import \{[^}]*\buseMemo\b[^}]*\} from 'react'/.test(source), 'React useMemo import is missing')
 

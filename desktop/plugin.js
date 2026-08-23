@@ -2077,11 +2077,13 @@ function PrDetail({ repo, number, onBack }) {
     queryKey: [ID, 'pr-conv', repo, n],
     enabled: !!repo && !!number && page === 'conversation',
     queryFn: async () => {
-      const comments = await ghApiBigPaginatedProjected(repo, `issues/${n}/comments?per_page=100`, '[.[]|{user:.user.login,created_at,html_url,body:(.body//""),body_html:(.body_html//"")}]')
-      const reviews = await ghApiBig(repo, `pulls/${n}/reviews`, '[.[:15][]|{user:.user.login,state,html_url,body:(.body//""),submitted_at}]')
-      // Issue #9: line-level review comments live on their own endpoint; bodies
-      // and hunks are big, so same shBig routing as the rest of this query.
-      const inline = await ghApiBigPaginatedProjected(repo, `pulls/${n}/comments?per_page=100`, '[.[]|{id,user:.user.login,body:(.body//""),path,line,original_line,in_reply_to_id,created_at,html_url,diff_hunk:(.diff_hunk//"")}]')
+      const [comments, reviews, inline] = await Promise.all([
+        ghApiBigPaginatedProjected(repo, `issues/${n}/comments?per_page=100`, '[.[]|{user:.user.login,created_at,html_url,body:(.body//""),body_html:(.body_html//"")}]'),
+        ghApiBig(repo, `pulls/${n}/reviews`, '[.[:15][]|{user:.user.login,state,html_url,body:(.body//""),submitted_at}]'),
+        // Issue #9: line-level review comments live on their own endpoint; bodies
+        // and hunks are big, so same shBig routing as the rest of this query.
+        ghApiBigPaginatedProjected(repo, `pulls/${n}/comments?per_page=100`, '[.[]|{id,user:.user.login,body:(.body//""),path,line,original_line,in_reply_to_id,created_at,html_url,diff_hunk:(.diff_hunk//"")}]'),
+      ])
       return {
         comments: Array.isArray(comments) ? comments : [],
         reviews: Array.isArray(reviews) ? reviews : [],
