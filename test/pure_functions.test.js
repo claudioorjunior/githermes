@@ -9,6 +9,7 @@ import {
   checkTone,
   summarizeChecks,
   sortChecks,
+  parseListQuery,
   matchesListQuery,
   groupInlineThreads,
   assembleTimeline,
@@ -174,6 +175,30 @@ test('matchesListQuery searches list metadata without case sensitivity', () => {
   assert.equal(matchesListQuery(item, 'octocat'), true)
   assert.equal(matchesListQuery(item, 'accessibility'), true)
   assert.equal(matchesListQuery(item, 'missing'), false)
+})
+
+test('Issue #30: parseListQuery extracts scoped tokens and free text', () => {
+  assert.deepEqual(parseListQuery('Fix author:OctoCat label:"good first issue"'), {
+    authors: ['octocat'],
+    labels: ['good first issue'],
+    text: 'fix',
+  })
+  assert.deepEqual(parseListQuery('ordinary free text'), { authors: [], labels: [], text: 'ordinary free text' })
+})
+
+test('Issue #30: matchesListQuery scopes tokens and combines them with text', () => {
+  const item = {
+    number: 42,
+    title: 'Fix keyboard navigation for Alice',
+    author: { login: 'Octocat' },
+    labels: [{ name: 'Accessibility' }, { name: 'Good First Issue' }],
+  }
+  assert.equal(matchesListQuery(item, 'author:"OCTO"'), true)
+  assert.equal(matchesListQuery(item, 'label:ACCESS'), true)
+  assert.equal(matchesListQuery(item, 'author:octo label:"good first issue" keyboard'), true)
+  assert.equal(matchesListQuery(item, 'author:alice'), false)
+  assert.equal(matchesListQuery(item, 'label:keyboard'), false)
+  assert.equal(matchesListQuery(item, '#42'), true)
 })
 
 test('groupInlineThreads groups comments into root and replies', () => {

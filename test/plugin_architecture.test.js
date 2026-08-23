@@ -38,3 +38,18 @@ test('Issue #31: pane and page wire the shared list keyboard flow', () => {
   assert.equal((source.match(/onKeyDown: keyboard\.onKeyDown/g) || []).length, 2)
   assert.equal((source.match(/inputRef: keyboard\.searchRef/g) || []).length, 2)
 })
+
+test('Issue #30: list filter tokens keep row and token actions separate', () => {
+  const lists = source.slice(source.indexOf('function PrList'), source.indexOf('function DetailToolbar'))
+  assert.equal((lists.match(/jsxs\('div', \{\n\s+onClick: \(\) => onOpen\(/g) || []).length, 2)
+  assert.equal((lists.match(/className: 'gh-row-open/g) || []).length, 2)
+  assert.ok(lists.includes("setListFilter(event, 'author', pr.author?.login)"))
+  assert.ok(lists.includes("setListFilter(event, 'label', l.name)"))
+})
+
+test('List filters fetch and expose the same author/label scopes', () => {
+  const lists = source.slice(source.indexOf('function PrList'), source.indexOf('function DetailToolbar'))
+  assert.ok(lists.includes('reviewDecision,statusCheckRollup,labels`'))
+  assert.equal((lists.match(/setListFilter\(event, 'author'/g) || []).length, 2)
+  assert.equal((lists.match(/setListFilter\(event, 'label'/g) || []).length, 2)
+})

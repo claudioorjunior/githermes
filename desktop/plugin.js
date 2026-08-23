@@ -110,7 +110,11 @@ const PANE_WRAP_CSS = `
   border-color: color-mix(in srgb, var(--ui-accent) 55%, var(--ui-stroke-secondary));
   background: var(--ui-bg-quinary);
 }
-.githermes-pane .gh-list-row:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 1px; }
+.githermes-pane .gh-list-row:focus-within { outline: 2px solid var(--ui-accent); outline-offset: 1px; }
+.githermes-pane .gh-row-open:focus-visible { outline: none; }
+.githermes-pane .gh-filter-token { cursor: pointer; }
+.githermes-pane .gh-filter-token:hover { text-decoration: underline; }
+.githermes-pane .gh-filter-token:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 1px; }
 .githermes-pane .gh-list-title { font-size: 13px; line-height: 18px; font-weight: 600; }
 .githermes-pane .gh-list-heading { color: var(--ui-text-tertiary); letter-spacing: .04em; text-transform: uppercase; }
 .githermes-pane .gh-status-chip {
@@ -608,15 +612,34 @@ export function numericListQuery(query) {
   return /^\d+$/.test(q) ? Number(q) : null
 }
 
+export function parseListQuery(query) {
+  const authors = [], labels = []
+  const text = String(query || '').replace(
+    /(^|\s)(author|label):(?:"((?:\\.|[^"\\])*)"|(\S+))/gi,
+    (match, lead, field, quoted, bare) => {
+      const value = String(quoted ?? bare).replace(/\\(["\\])/g, '$1').toLowerCase()
+      if (!value) return match
+      const values = field.toLowerCase() === 'author' ? authors : labels
+      values.push(value)
+      return lead
+    },
+  ).trim().replace(/\s+/g, ' ').toLowerCase()
+  return { authors, labels, text }
+}
+
 export function matchesListQuery(item, query) {
-  const raw = String(query || '').trim()
-  if (!raw) return true
+  const { authors, labels, text } = parseListQuery(query)
+  const author = String(item?.author?.login || '').toLowerCase()
+  const itemLabels = Array.isArray(item?.labels) ? item.labels.map(label => String(label?.name || '').toLowerCase()) : []
+  if (authors.some(value => !author.includes(value))) return false
+  if (labels.some(value => !itemLabels.some(label => label.includes(value)))) return false
+  if (!text) return true
   // Codex P2: #42 must not match #142 — exact number before substring
-  if (raw.startsWith('#')) {
-    const n = numericListQuery(raw)
+  if (text.startsWith('#')) {
+    const n = numericListQuery(text)
     if (n != null) return item?.number === n
   }
-  const q = raw.startsWith('#') ? raw.slice(1).trimStart().toLowerCase() : raw.toLowerCase()
+  const q = text.startsWith('#') ? text.slice(1).trimStart() : text
   if (!q) return true
   return [
     item?.number,
@@ -624,7 +647,7 @@ export function matchesListQuery(item, query) {
     item?.title,
     item?.author?.login,
     item?.headRefName,
-    ...(Array.isArray(item?.labels) ? item.labels.map(label => label?.name) : []),
+    ...itemLabels,
   ].some(value => String(value || '').toLowerCase().includes(q))
 }
 
@@ -954,15 +977,22 @@ export function labelTextColor(hex) {
   return lum > 140 ? '#000000' : '#ffffff'
 }
 
-function LabelChip({ label, className }) {
+function LabelChip({ label, className, onClick }) {
   if (!label?.name) return null
   const bg = label.color ? `#${String(label.color).replace(/^#/, '')}` : 'var(--ui-bg-quaternary)'
   const color = label.color ? labelTextColor(label.color) : 'var(--ui-text-secondary)'
-  return jsx('span', {
-    className: cn('inline-flex items-center px-1.5 py-px rounded-full text-[10px] font-medium leading-none shrink-0', className),
+  return jsx(onClick ? 'button' : 'span', {
+    type: onClick ? 'button' : undefined,
+    onClick,
+    className: cn('inline-flex items-center px-1.5 py-px rounded-full text-[10px] font-medium leading-none shrink-0', onClick && 'gh-filter-token', className),
     style: { backgroundColor: bg, color, border: '1px solid color-mix(in srgb, currentColor 18%, transparent)' },
     children: label.name,
   })
+}
+
+function setListFilter(event, field, value) {
+  event.stopPropagation()
+  $listQuery.set(`${field}:${JSON.stringify(String(value))}`)
 }
 
 // Issue #12: parse unified diff patch into structured row model
@@ -1750,9 +1780,9 @@ function PrList({ repo, onOpen, query }) {
   const q = useQuery({
     queryKey: [ID, 'prs', repo, state],
     enabled: !!repo,
-    // Issue #10: +reviewDecision,statusCheckRollup (~580B/row, 30 rows ≈ 17KB)
-    // overflows the 4000-char stdout cap, so the list routes through shBig.
-    queryFn: () => shJsonBig(`${GH} pr list --repo ${sq(repo)} --state ${sq(state)} --limit 30 --json number,title,state,author,updatedAt,url,baseRefName,headRefName,isDraft,additions,deletions,changedFiles,reviewDecision,statusCheckRollup`),
+    // Issue #10: expanded list metadata can overflow the stdout cap, so the
+    // list routes through shBig.
+    queryFn: () => shJsonBig(`${GH} pr list --repo ${sq(repo)} --state ${sq(state)} --limit 30 --json number,title,state,author,updatedAt,url,baseRefName,headRefName,isDraft,additions,deletions,changedFiles,reviewDecision,statusCheckRollup,labels`),
     staleTime: 15_000,
     refetchInterval: LIVE_POLL_MS,
     refetchIntervalInBackground: true,
@@ -1785,8 +1815,7 @@ function PrList({ repo, onOpen, query }) {
           jsx(Badge, { variant: 'secondary', className: 'ml-auto h-5 min-w-5 justify-center text-[10px]', children: String(items.length) }),
         ] }),
         ...items.map(pr =>
-        jsxs('button', {
-          type: 'button',
+        jsxs('div', {
           onClick: () => onOpen(pr.number),
           className: 'gh-list-row w-full text-left px-3 py-2.5 flex gap-2.5 items-start',
           children: [
@@ -1794,8 +1823,10 @@ function PrList({ repo, onOpen, query }) {
             jsxs('span', {
               className: 'min-w-0 flex-1',
               children: [
-                jsx(ItemTitle, { title: pr.title, number: pr.number }),
+                jsx('button', { type: 'button', className: 'gh-row-open block w-full text-left', children: jsx(ItemTitle, { title: pr.title, number: pr.number }) }),
                 jsxs('span', { className: 'mt-1 flex flex-wrap items-center gap-x-1.5 text-[10px] text-(--ui-text-tertiary)', children: [
+                  pr.author?.login ? jsx('button', { type: 'button', className: 'gh-filter-token', onClick: event => setListFilter(event, 'author', pr.author?.login), children: `@${pr.author.login}` }) : null,
+                  ...(Array.isArray(pr.labels) ? pr.labels.map(l => jsx(LabelChip, { label: l, onClick: event => setListFilter(event, 'label', l.name) }, l.name || l.id)) : []),
                   jsx('span', { className: 'rounded bg-(--ui-bg-editor) px-1.5 py-0.5 font-mono', children: pr.headRefName || '—' }),
                   jsx(DiffCount, { add: pr.additions, del: pr.deletions }),
                   jsx('span', { children: `${pr.changedFiles ?? 0} files` }),
@@ -1851,8 +1882,7 @@ function IssueList({ repo, onOpen, query }) {
           jsx(Badge, { variant: 'secondary', className: 'ml-auto h-5 min-w-5 justify-center text-[10px]', children: String(items.length) }),
         ] }),
         ...items.map(it =>
-        jsxs('button', {
-          type: 'button',
+        jsxs('div', {
           onClick: () => onOpen(it.number),
           className: 'gh-list-row w-full text-left px-3 py-2.5 flex gap-2.5 items-start',
           children: [
@@ -1860,11 +1890,14 @@ function IssueList({ repo, onOpen, query }) {
             jsxs('span', {
               className: 'min-w-0 flex-1',
               children: [
-                jsx(ItemTitle, { title: it.title, number: it.number }),
+                jsx('button', { type: 'button', className: 'gh-row-open block w-full text-left', children: jsx(ItemTitle, { title: it.title, number: it.number }) }),
                 Array.isArray(it.labels) && it.labels.length
-                  ? jsx('span', { className: 'mt-1 flex flex-wrap gap-1 items-center', children: it.labels.map(l => jsx(LabelChip, { label: l }, l.name || l.id)) })
+                  ? jsx('span', { className: 'mt-1 flex flex-wrap gap-1 items-center', children: it.labels.map(l => jsx(LabelChip, { label: l, onClick: event => setListFilter(event, 'label', l.name) }, l.name || l.id)) })
                   : null,
-                jsx('span', { className: 'text-[10px] text-(--ui-text-tertiary)', children: `${it.author?.login || '—'} · ${ago(it.updatedAt)}` }),
+                jsxs('span', { className: 'text-[10px] text-(--ui-text-tertiary)', children: [
+                  it.author?.login ? jsx('button', { type: 'button', className: 'gh-filter-token', onClick: event => setListFilter(event, 'author', it.author?.login), children: `@${it.author.login}` }) : '—',
+                  ` · ${ago(it.updatedAt)}`,
+                ] }),
               ],
             }),
             jsx(Codicon, { name: 'chevron-right', className: 'gh-card-arrow mt-1 shrink-0', 'aria-hidden': true }),
