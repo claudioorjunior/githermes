@@ -32,6 +32,7 @@ import {
   isMergeConflict,
   deriveChunkOffsets,
   readChunksConcurrently,
+  listKeyAction,
 } from '../desktop/plugin.js'
 
 test('Issue #13: labelTextColor chooses high-contrast text color based on luminance', () => {
@@ -457,4 +458,22 @@ test('Issue #28: readChunksConcurrently bounds overlapping reads and preserves b
   assert.ok(peak > 1)
   assert.ok(peak <= 4)
   assert.equal(Buffer.from(output.replace(/\s+/g, ''), 'base64').toString('utf8'), payload)
+})
+
+test('Issue #31: listKeyAction handles only scoped list shortcuts', () => {
+  const div = { tagName: 'DIV', isContentEditable: false }
+  const input = { tagName: 'INPUT', isContentEditable: false }
+  const editable = { tagName: 'SPAN', isContentEditable: true }
+
+  assert.equal(listKeyAction({ key: '/', target: div }), 'focus')
+  assert.equal(listKeyAction({ key: '/', target: input }), null)
+  assert.equal(listKeyAction({ key: '/', target: editable }), null)
+  assert.equal(listKeyAction({ key: '/', target: div, modified: true }), null)
+  assert.equal(listKeyAction({ key: 'Escape', query: 'bug', searchFocused: true }), 'clear')
+  assert.equal(listKeyAction({ key: 'Escape', query: 'bug', searchFocused: true, modified: true }), null)
+  assert.equal(listKeyAction({ key: 'Escape', query: '', searchFocused: true }), null)
+  assert.equal(listKeyAction({ key: 'Enter', searchFocused: true, resultCount: 1 }), 'open')
+  assert.equal(listKeyAction({ key: 'Enter', searchFocused: true, resultCount: 1, modified: true }), null)
+  assert.equal(listKeyAction({ key: 'Enter', searchFocused: true, resultCount: 2 }), null)
+  assert.equal(listKeyAction({ key: 'Enter', searchFocused: false, resultCount: 1 }), null)
 })

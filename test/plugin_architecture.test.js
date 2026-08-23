@@ -26,10 +26,15 @@ test('Issue #29: Markdown parsing is memoized at the component top level', () =>
   assert.ok(composer.includes("blocks: previewBlocks, keyPrefix: 'preview'"))
 })
 
-
 test('Issue #29: timeline assembly is memoized before detail early returns', () => {
   const detail = source.slice(source.indexOf('function PrDetail'), source.indexOf('function IssueDetail'))
   const memo = detail.indexOf('const timeline = useMemo(() => assembleTimeline(')
   assert.ok(memo >= 0 && memo < detail.indexOf('if (headerQ.isLoading)'), 'timeline memo must run before early returns')
   assert.ok(detail.includes('[convQ.data?.reviews, convQ.data?.comments, convQ.data?.threads]'))
+})
+
+test('Issue #31: pane and page wire the shared list keyboard flow', () => {
+  assert.equal((source.match(/const keyboard = useListKeyboardFlow\(query\)/g) || []).length, 2)
+  assert.equal((source.match(/onKeyDown: keyboard\.onKeyDown/g) || []).length, 2)
+  assert.equal((source.match(/inputRef: keyboard\.searchRef/g) || []).length, 2)
 })

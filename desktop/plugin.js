@@ -628,6 +628,16 @@ export function matchesListQuery(item, query) {
   ].some(value => String(value || '').toLowerCase().includes(q))
 }
 
+export function listKeyAction({ key, target, modified = false, query = '', searchFocused = false, resultCount = 0 }) {
+  const tag = String(target?.tagName || '').toUpperCase()
+  const editable = target?.isContentEditable || tag === 'INPUT' || tag === 'TEXTAREA'
+  if (modified) return null
+  if (key === '/' && !editable) return 'focus'
+  if (key === 'Escape' && query && searchFocused) return 'clear'
+  if (key === 'Enter' && searchFocused && resultCount === 1) return 'open'
+  return null
+}
+
 // Lookup is state-agnostic (`gh pr view N` ignores the filter), so a `#N` hit
 // from another state must not render in the current list. 'all' passes through.
 export function lookupMatchesState(item, state, isPr) {
@@ -2333,8 +2343,31 @@ function useGitHubShellState() {
   return { reposQ, repo, tab, query, selPr, selIssue }
 }
 
+function useListKeyboardFlow(query) {
+  const searchRef = useRef(null)
+  const onKeyDown = event => {
+    const rows = event.key === 'Enter' ? event.currentTarget.querySelectorAll('.gh-list-row') : []
+    const action = listKeyAction({
+      key: event.key,
+      target: event.target,
+      modified: event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey,
+      query,
+      searchFocused: event.target === searchRef.current,
+      resultCount: rows.length,
+    })
+    if (!action) return
+    event.preventDefault()
+    event.stopPropagation()
+    if (action === 'focus') searchRef.current?.focus()
+    else if (action === 'clear') { $listQuery.set(''); searchRef.current?.blur() }
+    else rows[0]?.click()
+  }
+  return { searchRef, onKeyDown }
+}
+
 function GitHubPane() {
   const { reposQ, repo, tab, query, selPr, selIssue } = useGitHubShellState()
+  const keyboard = useListKeyboardFlow(query)
 
   const showPr = tab === 'prs' && selPr != null
   const showIssue = tab === 'issues' && selIssue != null
@@ -2352,6 +2385,7 @@ function GitHubPane() {
 
   return jsxs('div', {
     className: 'flex h-full flex-col min-h-0',
+    onKeyDown: keyboard.onKeyDown,
     children: [
       jsx(SessionPrBanner, {}),
       jsxs('div', {
@@ -2383,6 +2417,7 @@ function GitHubPane() {
                 placeholder: 'Filter by title, #number, author, branch or label',
                 value: query,
                 onChange: value => $listQuery.set(value),
+                inputRef: keyboard.searchRef,
               }),
               jsx(StateSelect, { kind: tab }),
             ],
@@ -2401,6 +2436,7 @@ function GitHubPane() {
 
 function GithubPage() {
   const { reposQ, repo, tab, query, selPr, selIssue } = useGitHubShellState()
+  const keyboard = useListKeyboardFlow(query)
 
   const showPr = tab === 'prs' && selPr != null
   const showIssue = tab === 'issues' && selIssue != null
@@ -2417,6 +2453,7 @@ function GithubPage() {
 
   return jsxs('div', {
     className: 'flex h-full min-h-0 flex-col',
+    onKeyDown: keyboard.onKeyDown,
     children: [
       jsxs('div', {
         className: 'shrink-0 border-b border-(--ui-stroke-secondary) bg-(--ui-editor-surface-background)',
@@ -2453,6 +2490,7 @@ function GithubPage() {
                     placeholder: 'Filter by title, #number, author, branch or label',
                     value: query,
                     onChange: value => $listQuery.set(value),
+                    inputRef: keyboard.searchRef,
                   }),
                   jsx(StateSelect, { kind: tab }),
                 ],
