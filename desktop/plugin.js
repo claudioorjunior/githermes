@@ -53,11 +53,14 @@ const SIDEBAR_NAV_LIT = 'sidebar.nav'
 const TRUNK = new Set(['main', 'master', 'dev', 'develop', 'trunk'])
 const GH = 'PATH=/opt/homebrew/bin:/usr/local/bin:$PATH gh'
 const PR_URL = /https?:\/\/github\.com\/([^/\s]+)\/([^/\s#?]+)\/pull\/(\d+)/i
-const LIVE_POLL_MS = 10_000
+const FAST_POLL_MS = 10_000
+const MEDIUM_POLL_MS = 30_000
 const HEADER_POLL_MS = 60_000
+const SLOW_POLL_MS = 120_000
 const COMMENT_MAX = 65_536
 
 let pluginCtx = null
+const $alwaysVisible = atom(true)
 
 // Scoped wrap fix. Radix ScrollArea wraps children in a display:table div
 // (content-measuring hack) that lets content grow wider than the pane instead of
@@ -289,8 +292,14 @@ export function commentToChatText({ login, verb, timestamp, body, permalink }) {
 export function livePollInterval(data, opts) {
   const state = String(data?.state || '').toUpperCase()
   const terminal = !!(data?.merged || state === 'MERGED' || state === 'CLOSED')
-  if (!terminal) return LIVE_POLL_MS
-  return opts?.header ? HEADER_POLL_MS : false
+  if (terminal) return false
+  if (opts?.kind === 'checks') {
+    const active = Array.isArray(opts.checks) && opts.checks.some(check => ['pending', 'fail'].includes(String(check?.bucket || '').toLowerCase()))
+    return active ? FAST_POLL_MS : HEADER_POLL_MS
+  }
+  if (opts?.kind === 'header') return HEADER_POLL_MS
+  if (opts?.kind === 'slow') return SLOW_POLL_MS
+  return MEDIUM_POLL_MS
 }
 
 export function loginOf(login) {
@@ -1318,6 +1327,7 @@ function MergeControl({ repo, number, mergeableState, head, base }) {
       // subcommand; GH_PROMPT_DISABLED=1 suppresses prompts for this call only.
       await sh(`GH_PROMPT_DISABLED=1 ${GH} pr merge ${sq(String(number))} --repo ${sq(repo)} ${flag}${del}`)
       queryClient.invalidateQueries({ queryKey: [ID, 'pr-page', repo, String(number)] })
+      queryClient.invalidateQueries({ queryKey: [ID, 'pr-checks', repo, String(number)] })
       queryClient.invalidateQueries({ queryKey: [ID, 'prs', repo] })
       queryClient.invalidateQueries({ queryKey: [ID, 'session-git'] })
       setOpen(false)
@@ -1779,17 +1789,17 @@ function ListEmptyState({ kind, state, repo, query }) {
   ] })
 }
 
-function PrList({ repo, onOpen, query }) {
+function PrList({ repo, onOpen, query, active = true }) {
   const state = useValue($prState)
   const q = useQuery({
     queryKey: [ID, 'prs', repo, state],
-    enabled: !!repo,
+    enabled: !!repo && active,
     // Issue #10: expanded list metadata can overflow the stdout cap, so the
     // list routes through shBig.
     queryFn: () => shJsonBig(`${GH} pr list --repo ${sq(repo)} --state ${sq(state)} --limit 30 --json number,title,state,author,updatedAt,url,baseRefName,headRefName,isDraft,additions,deletions,changedFiles,reviewDecision,statusCheckRollup,labels`),
     staleTime: 15_000,
-    refetchInterval: LIVE_POLL_MS,
-    refetchIntervalInBackground: true,
+    refetchInterval: MEDIUM_POLL_MS,
+    refetchOnWindowFocus: true,
   })
   const allItems = Array.isArray(q.data) ? q.data : []
   const exactN = numericListQuery(query)
@@ -1847,16 +1857,16 @@ function PrList({ repo, onOpen, query }) {
   })
 }
 
-function IssueList({ repo, onOpen, query }) {
+function IssueList({ repo, onOpen, query, active = true }) {
   const state = useValue($issueState)
   const q = useQuery({
     queryKey: [ID, 'issues', repo, state],
-    enabled: !!repo,
+    enabled: !!repo && active,
     // Issue #10: same stdout-cap routing as the PR list (busy repos overflow).
     queryFn: () => shJsonBig(`${GH} issue list --repo ${sq(repo)} --state ${sq(state)} --limit 30 --json number,title,state,author,updatedAt,url,labels`),
     staleTime: 15_000,
-    refetchInterval: LIVE_POLL_MS,
-    refetchIntervalInBackground: true,
+    refetchInterval: MEDIUM_POLL_MS,
+    refetchOnWindowFocus: true,
   })
   const allItems = Array.isArray(q.data) ? q.data : []
   const exactN = numericListQuery(query)
@@ -2060,22 +2070,22 @@ function CommentComposer({ repo, number, kind, onPosted }) {
   })
 }
 
-function PrDetail({ repo, number, onBack }) {
+function PrDetail({ repo, number, onBack, active = true }) {
   const [page, setPage] = useState('conversation')
   const convEndRef = useRef(null)
   const [atBottom, setAtBottom] = useState(true)
   const n = String(number)
   const headerQ = useQuery({
     queryKey: [ID, 'pr-page', repo, n],
-    enabled: !!repo && !!number,
+    enabled: !!repo && !!number && active,
     queryFn: () => ghApiBig(repo, `pulls/${n}`, '{number,title,state,draft,merged,mergeable,mergeable_state,user:.user.login,created_at,additions,deletions,changed_files,base:.base.ref,head:.head.ref,html_url,body:(.body//"")}'),
     staleTime: 5_000,
-    refetchInterval: q => livePollInterval(q.state.data, { header: true }),
-    refetchIntervalInBackground: true,
+    refetchInterval: q => livePollInterval(q.state.data, { kind: 'header' }),
+    refetchOnWindowFocus: true,
   })
   const convQ = useQuery({
     queryKey: [ID, 'pr-conv', repo, n],
-    enabled: !!repo && !!number && page === 'conversation',
+    enabled: !!repo && !!number && active && page === 'conversation',
     queryFn: async () => {
       const [comments, reviews, inline] = await Promise.all([
         ghApiBigPaginatedProjected(repo, `issues/${n}/comments?per_page=100`, '[.[]|{user:.user.login,created_at,html_url,body:(.body//""),body_html:(.body_html//"")}]'),
@@ -2092,27 +2102,27 @@ function PrDetail({ repo, number, onBack }) {
     },
     staleTime: 5_000,
     refetchInterval: () => livePollInterval(headerQ.data),
-    refetchIntervalInBackground: true,
+    refetchOnWindowFocus: true,
   })
   const filesQ = useQuery({
     queryKey: [ID, 'pr-files', repo, n],
-    enabled: !!repo && !!number && page === 'files',
+    enabled: !!repo && !!number && active && page === 'files',
     queryFn: () => ghApiBigPaginatedProjected(repo, `pulls/${n}/files?per_page=100`, '[.[]|{filename,status,additions,deletions,patch:(.patch//"")}]'),
     staleTime: 5_000,
-    refetchInterval: () => livePollInterval(headerQ.data),
-    refetchIntervalInBackground: true,
+    refetchInterval: () => livePollInterval(headerQ.data, { kind: 'slow' }),
+    refetchOnWindowFocus: true,
   })
   const commitsQ = useQuery({
     queryKey: [ID, 'pr-commits', repo, n],
-    enabled: !!repo && !!number && page === 'commits',
+    enabled: !!repo && !!number && active && page === 'commits',
     queryFn: () => ghApiBig(repo, `pulls/${n}/commits`, '[.[:30][]|{sha:.sha[0:7],full:.sha,msg:(.commit.message|sub("\n(?s).*";"")),author:(.commit.author.name//.author.login//"—"),date:(.commit.author.date//"")}]'),
     staleTime: 5_000,
-    refetchInterval: () => livePollInterval(headerQ.data),
-    refetchIntervalInBackground: true,
+    refetchInterval: () => livePollInterval(headerQ.data, { kind: 'slow' }),
+    refetchOnWindowFocus: true,
   })
   const checksQ = useQuery({
     queryKey: [ID, 'pr-checks', repo, n],
-    enabled: !!repo && !!number && (page === 'checks' || page === 'conversation'),
+    enabled: !!repo && !!number && active && (page === 'checks' || page === 'conversation'),
     queryFn: async () => {
       try {
         const rows = await shJsonLoose(`${GH} pr checks ${sq(n)} --repo ${sq(repo)} --json name,state,bucket,link`)
@@ -2125,8 +2135,8 @@ function PrDetail({ repo, number, onBack }) {
       }
     },
     staleTime: 5_000,
-    refetchInterval: () => livePollInterval(headerQ.data),
-    refetchIntervalInBackground: true,
+    refetchInterval: q => livePollInterval(headerQ.data, { kind: 'checks', checks: q.state.data }),
+    refetchOnWindowFocus: true,
   })
 
   // Codex P1: hook must run every render — placed before any early return
@@ -2259,16 +2269,16 @@ function PrDetail({ repo, number, onBack }) {
   })
 }
 
-function IssueDetail({ repo, number, onBack }) {
+function IssueDetail({ repo, number, onBack, active = true }) {
   const n = String(number)
   const convEndRef = useRef(null)
   const q = useQuery({
     queryKey: [ID, 'issue-detail', repo, n],
-    enabled: !!repo && !!number,
+    enabled: !!repo && !!number && active,
     queryFn: () => shJsonBig(`${GH} issue view ${sq(n)} --repo ${sq(repo)} --json number,title,body,state,author,createdAt,comments,labels,url`),
     staleTime: 5_000,
-    refetchInterval: query => livePollInterval(query.state.data, { header: true }),
-    refetchIntervalInBackground: true,
+    refetchInterval: query => livePollInterval(query.state.data),
+    refetchOnWindowFocus: true,
   })
   const d = q.data
   if (q.isLoading) return jsx(DetailLoading, { repo, number, onBack, backLabel: 'Back to issues' })
@@ -2407,13 +2417,14 @@ function useListKeyboardFlow(query) {
 
 function GitHubPane() {
   const { reposQ, repo, tab, query, selPr, selIssue } = useGitHubShellState()
+  const paneVisible = useValue(typeof host.paneVisibility === 'function' ? host.paneVisibility(PANE_ID) : $alwaysVisible)
   const keyboard = useListKeyboardFlow(query)
 
   const showPr = tab === 'prs' && selPr != null
   const showIssue = tab === 'issues' && selIssue != null
 
-  if (showPr) return jsx(PrDetail, { repo, number: selPr, onBack: () => $selPr.set(null) })
-  if (showIssue) return jsx(IssueDetail, { repo, number: selIssue, onBack: () => $selIssue.set(null) })
+  if (showPr) return jsx(PrDetail, { repo, number: selPr, active: paneVisible, onBack: () => $selPr.set(null) })
+  if (showIssue) return jsx(IssueDetail, { repo, number: selIssue, active: paneVisible, onBack: () => $selIssue.set(null) })
 
   if (reposQ.isError) {
     return jsx('div', { className: 'p-6', children: jsx(ErrorState, {
@@ -2467,8 +2478,8 @@ function GitHubPane() {
       jsx('div', {
         className: 'flex-1 min-h-0',
         children: tab === 'prs'
-          ? jsx(PrList, { repo, query, onOpen: n => $selPr.set(n) })
-          : jsx(IssueList, { repo, query, onOpen: n => $selIssue.set(n) }),
+          ? jsx(PrList, { repo, query, active: paneVisible, onOpen: n => $selPr.set(n) })
+          : jsx(IssueList, { repo, query, active: paneVisible, onOpen: n => $selIssue.set(n) }),
       }),
     ],
   })

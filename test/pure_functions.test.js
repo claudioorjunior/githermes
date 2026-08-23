@@ -330,14 +330,18 @@ test('commentToChatText formats quote blocks for chat composer', () => {
   assert.ok(text.includes('> https://github.com/owner/repo/pull/1#issuecomment-1'))
 })
 
-test('livePollInterval keeps open resources live and slows terminal headers', () => {
-  assert.equal(livePollInterval({ state: 'OPEN' }), 10_000)
+test('Issue #34: livePollInterval tiers visible PR data by volatility', () => {
+  assert.equal(livePollInterval({ state: 'OPEN' }), 30_000)
+  assert.equal(livePollInterval({ state: 'OPEN' }, { kind: 'header' }), 60_000)
+  assert.equal(livePollInterval({ state: 'OPEN' }, { kind: 'slow' }), 120_000)
+  assert.equal(livePollInterval({ state: 'OPEN' }, { kind: 'checks', checks: [{ bucket: 'pending' }] }), 10_000)
+  assert.equal(livePollInterval({ state: 'OPEN' }, { kind: 'checks', checks: [{ bucket: 'fail' }] }), 10_000)
+  assert.equal(livePollInterval({ state: 'OPEN', draft: true }, { kind: 'checks', checks: [{ bucket: 'pending' }] }), 10_000)
+  assert.equal(livePollInterval({ state: 'OPEN' }, { kind: 'checks', checks: [{ bucket: 'pass' }] }), 60_000)
+  assert.equal(livePollInterval({ state: 'OPEN' }, { kind: 'checks', checks: [] }), 60_000)
   assert.equal(livePollInterval({ state: 'CLOSED' }), false)
-  assert.equal(livePollInterval({ state: 'MERGED' }), false)
-  assert.equal(livePollInterval({ merged: true }), false)
-  assert.equal(livePollInterval(null), 10_000)
-  assert.equal(livePollInterval({ state: 'CLOSED' }, { header: true }), 60_000)
-  assert.equal(livePollInterval({ state: 'OPEN' }, { header: true }), 10_000)
+  assert.equal(livePollInterval({ state: 'MERGED' }, { kind: 'checks', checks: [{ bucket: 'pending' }] }), false)
+  assert.equal(livePollInterval({ merged: true }, { kind: 'header' }), false)
 })
 
 test('commentBodyOk rejects empty and oversized comments', () => {
