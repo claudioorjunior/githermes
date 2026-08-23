@@ -1694,6 +1694,8 @@ function PrList({ repo, onOpen, query }) {
     // overflows the 4000-char stdout cap, so the list routes through shBig.
     queryFn: () => shJsonBig(`${GH} pr list --repo ${sq(repo)} --state ${sq(state)} --limit 30 --json number,title,state,author,updatedAt,url,baseRefName,headRefName,isDraft,additions,deletions,changedFiles,reviewDecision,statusCheckRollup`),
     staleTime: 15_000,
+    refetchInterval: LIVE_POLL_MS,
+    refetchIntervalInBackground: true,
   })
   const allItems = Array.isArray(q.data) ? q.data : []
   const exactN = numericListQuery(query)
@@ -1758,6 +1760,8 @@ function IssueList({ repo, onOpen, query }) {
     // Issue #10: same stdout-cap routing as the PR list (busy repos overflow).
     queryFn: () => shJsonBig(`${GH} issue list --repo ${sq(repo)} --state ${sq(state)} --limit 30 --json number,title,state,author,updatedAt,url,labels`),
     staleTime: 15_000,
+    refetchInterval: LIVE_POLL_MS,
+    refetchIntervalInBackground: true,
   })
   const allItems = Array.isArray(q.data) ? q.data : []
   const exactN = numericListQuery(query)
