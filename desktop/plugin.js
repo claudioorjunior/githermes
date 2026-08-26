@@ -2003,6 +2003,11 @@ function IssueList({ repo, onOpen, query, active = true }) {
 
 function AssignToBot({ kind, repo, number }) {
   const [open, setOpen] = useState(false)
+  // Issue #60 review: session.create needs cwd to land the bot in the checked-out
+  // repo. Guarded inside buildAssignPlan (only when it matches this item's repo);
+  // reuses the cached [ID,'session-git',cwd] entry instead of shelling out again.
+  const cwd = useValue(host.state.cwd)
+  const sessionGitQ = useSessionGit(cwd)
   const itemKey = `${kind}:${String(repo).toLowerCase()}#${number}`
   const assignment = useValue($botAssignments)[itemKey]
   const ready = assignHostReady(host)
@@ -2015,7 +2020,11 @@ function AssignToBot({ kind, repo, number }) {
   const bots = botsQ.data || []
   const availableBots = bots.filter(bot => bot.name !== assignment?.profile)
   const run = useMutation({
-    mutationFn: ({ bot }) => assignToBot(host, buildAssignPlan({ bot, kind, repo, number })),
+    mutationFn: ({ bot }) => assignToBot(host, buildAssignPlan({
+      bot, kind, repo, number,
+      sessionRepo: sessionGitQ.data?.repo,
+      sessionCwd: cwd,
+    })),
     onSuccess: (result, { bot, itemKey }) => {
       const label = bots.find(candidate => candidate.name === bot)?.label || bot
       const next = updateBotAssignment($botAssignments.get(), itemKey, { profile: bot, label, sessionId: result.stored_session_id })
