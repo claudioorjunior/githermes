@@ -32,6 +32,10 @@ import {
   loginOf,
   projectIssueComments,
   isMergeConflict,
+  canApprove,
+  issueAction,
+  approvePlan,
+  issuePlan,
   deriveChunkOffsets,
   readChunksConcurrently,
   listKeyAction,
@@ -118,6 +122,55 @@ test('prStateKey resolves open, draft, merged, closed states', () => {
   assert.equal(prStateKey({ state: 'CLOSED' }), 'closed')
   assert.equal(prStateKey({ state: 'OPEN' }), 'open')
   assert.equal(prStateKey(null), 'open')
+})
+
+// Issue #58: Approve appears only for open PRs not authored by the viewer.
+test('canApprove gates on open state and non-self authorship', () => {
+  assert.ok(canApprove('open', 'viewer', 'someone-else'))
+  assert.ok(!canApprove('open', 'viewer', 'viewer'))
+  assert.ok(!canApprove('merged', 'viewer', 'someone-else'))
+  assert.ok(!canApprove('closed', 'viewer', 'someone-else'))
+  assert.ok(!canApprove('draft', 'viewer', 'someone-else'))
+  // viewer unknown or fetch failed -> hide, never guess
+  assert.ok(!canApprove('open', null, 'someone-else'))
+  assert.ok(!canApprove('open', undefined, 'someone-else'))
+})
+
+// Issue #59: exactly one action per issue state.
+test('issueAction maps open->close, closed->reopen, else null', () => {
+  assert.equal(issueAction('OPEN'), 'close')
+  assert.equal(issueAction('open'), 'close')
+  assert.equal(issueAction('CLOSED'), 'reopen')
+  assert.equal(issueAction('closed'), 'reopen')
+  assert.equal(issueAction(null), null)
+  assert.equal(issueAction('merged'), null)
+})
+
+// Issues #58/#59: confirmation text names repo+number; invalidation keys match
+// the existing post-comment / merge flows.
+test('approvePlan and issuePlan pin confirm text and invalidation wiring', () => {
+  const ap = approvePlan('owner/repo', 58)
+  assert.equal(ap.confirm, 'Approve PR #58 in owner/repo?')
+  assert.deepEqual(ap.invalidate, [
+    ['githermes', 'pr-page', 'owner/repo', '58'],
+    ['githermes', 'pr-conv', 'owner/repo', '58'],
+    ['githermes', 'prs', 'owner/repo'],
+  ])
+
+  const cp = issuePlan('owner/repo', 59, 'OPEN')
+  assert.equal(cp.action, 'close')
+  assert.equal(cp.confirm, 'Close issue #59 in owner/repo?')
+  assert.deepEqual(cp.invalidate, [
+    ['githermes', 'issue-detail', 'owner/repo', '59'],
+    ['githermes', 'issues', 'owner/repo'],
+  ])
+
+  const rp = issuePlan('owner/repo', 59, 'CLOSED')
+  assert.equal(rp.action, 'reopen')
+  assert.equal(rp.confirm, 'Reopen issue #59 in owner/repo?')
+
+  // no state -> nothing to run or invalidate
+  assert.deepEqual(issuePlan('owner/repo', 59, null), { action: null, confirm: '', invalidate: [] })
 })
 
 test('ciState resolves failing, pending, passing and none', () => {
