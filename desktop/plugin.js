@@ -609,6 +609,49 @@ export function isMergeConflict(mergeableState) {
   return mergeableState === 'dirty'
 }
 
+// Issue #58: approve only open PRs authored by someone else — gh refuses
+// self-approval, so the button must not be there in the first place.
+export function canApprove(prKey, viewerLogin, authorLogin) {
+  if (prKey !== 'open') return false
+  const viewer = loginOf(viewerLogin)
+  return !!viewer && viewer !== loginOf(authorLogin)
+}
+
+// Issue #59: which state transition the issue detail offers, if any.
+// gh wants the lowercase action ("closed" -> close, "open" -> reopen).
+export function issueAction(state) {
+  const s = String(state || '').toLowerCase()
+  return s === 'open' ? 'close' : s === 'closed' ? 'reopen' : null
+}
+
+// Wiring contracts pulled out of the JSX closures so the acceptance-criteria
+// test can pin confirmation text and invalidation keys against drift.
+export function approvePlan(repo, number) {
+  const n = String(number)
+  return {
+    confirm: `Approve PR #${n} in ${repo}?`,
+    // conversation + header + PR-list queries, matching the merge flow minus git/session keys
+    invalidate: [
+      [ID, 'pr-page', repo, n],
+      [ID, 'pr-conv', repo, n],
+      [ID, 'prs', repo],
+    ],
+  }
+}
+
+export function issuePlan(repo, number, state) {
+  const n = String(number)
+  const action = issueAction(state)
+  return {
+    action,
+    confirm: action ? `${action === 'close' ? 'Close' : 'Reopen'} issue #${n} in ${repo}?` : '',
+    // issue-detail + issue-list queries, matching the comment-posted flow
+    invalidate: action
+      ? [[ID, 'issue-detail', repo, n], [ID, 'issues', repo]]
+      : [],
+  }
+}
+
 // `gh pr checks` exits 1 with "no checks reported on the '<branch>' branch" when a
 // PR has no CI (#23) — normal state, not an error. Anchored to the documented
 // phrase so unrelated stderr containing "no checks" (e.g. an outage message)
@@ -1513,6 +1556,184 @@ function MergeControl({ repo, number, mergeableState, head, base }) {
   })
 }
 
+// Issue #58: approve an open PR from the detail toolbar. Rendered by PrDetail
+// only when canApprove() gates it in — no viewer fetch of its own.
+function ApproveControl({ repo, number }) {
+  const n = String(number)
+  const [open, setOpen] = useState(false)
+  const [isApproving, setIsApproving] = useState(false)
+  const [error, setError] = useState(null)
+
+  const handleApprove = async () => {
+    setIsApproving(true)
+    setError(null)
+    try {
+      await sh(`${GH} pr review ${sq(n)} --repo ${sq(repo)} --approve`)
+      const plan = approvePlan(repo, n)
+      await Promise.all(plan.invalidate.map(queryKey => queryClient.invalidateQueries({ queryKey })))
+      setOpen(false)
+    } catch (err) {
+      setError(err?.message || String(err))
+    } finally {
+      setIsApproving(false)
+    }
+  }
+
+  if (!open) {
+    return jsxs(Button, {
+      size: 'sm',
+      className: 'h-5 px-2 text-[10px] gap-1 ml-auto',
+      onClick: () => { setOpen(true); setError(null) },
+      children: [
+        jsx(Codicon, { name: 'git-pull-request' }),
+        jsx('span', { children: 'Approve' }),
+      ],
+    })
+  }
+
+  return jsxs('div', {
+    className: 'w-full rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-quaternary) p-2.5 space-y-2 mt-2 text-xs',
+    children: [
+      jsxs('div', {
+        className: 'flex items-center justify-between',
+        children: [
+          jsxs('span', { className: 'font-semibold text-(--ui-text-primary) flex items-center gap-1.5', children: [
+            jsx(Codicon, { name: 'git-pull-request' }),
+            jsx('span', { children: approvePlan(repo, n).confirm }),
+          ] }),
+          jsx(Button, {
+            size: 'sm',
+            variant: 'ghost',
+            className: 'h-5 w-5 p-0 text-[10px]',
+            disabled: isApproving,
+            onClick: () => { setOpen(false); setError(null) },
+            children: '✕',
+          }),
+        ],
+      }),
+      error ? jsx('div', {
+        className: 'p-2 rounded bg-(--ui-bg-quinary) border border-(--ui-red)/30 text-[11px] text-(--ui-red) font-mono break-words whitespace-pre-wrap',
+        children: error,
+      }) : null,
+      jsxs('div', {
+        className: 'flex gap-2 justify-end pt-1',
+        children: [
+          jsx(Button, {
+            size: 'sm',
+            variant: 'ghost',
+            className: 'h-6 text-xs',
+            disabled: isApproving,
+            onClick: () => { setOpen(false); setError(null) },
+            children: 'Cancel',
+          }),
+          jsxs(Button, {
+            size: 'sm',
+            className: 'h-6 px-2.5 text-xs gap-1.5 disabled:opacity-60',
+            disabled: isApproving,
+            onClick: handleApprove,
+            children: isApproving
+              ? [jsx(GlyphSpinner, {}), jsx('span', { children: 'Approving...' })]
+              : [jsx(Codicon, { name: 'git-pull-request' }), jsx('span', { children: 'Confirm approve' })],
+          }),
+        ],
+      }),
+    ],
+  })
+}
+
+// Issue #59: close/reopen an issue from the detail view. The action follows the
+// current state (issueAction). Same two-state UI as Merge/Approve so Cancel works
+// for both verbs — reopen used to land on the confirm panel immediately, which
+// made Cancel a no-op (confirming stayed false, panel stayed open).
+function IssueControl({ repo, number, state }) {
+  const n = String(number)
+  const action = issueAction(state)
+  const [confirming, setConfirming] = useState(false)
+  const [isPending, setIsPending] = useState(false)
+  const [error, setError] = useState(null)
+
+  if (!action) return null
+
+  const run = async () => {
+    setIsPending(true)
+    setError(null)
+    try {
+      await sh(`${GH} issue ${action} ${sq(n)} --repo ${sq(repo)}`)
+      const plan = issuePlan(repo, n, state)
+      await Promise.all(plan.invalidate.map(queryKey => queryClient.invalidateQueries({ queryKey })))
+      setConfirming(false)
+    } catch (err) {
+      setError(err?.message || String(err))
+    } finally {
+      setIsPending(false)
+    }
+  }
+
+  if (!confirming) {
+    return jsxs(Button, {
+      size: 'sm',
+      className: 'h-5 px-2 text-[10px] gap-1 ml-auto',
+      disabled: isPending,
+      onClick: () => { setConfirming(true); setError(null) },
+      children: [
+        jsx(Codicon, { name: 'issues' }),
+        jsx('span', { children: action === 'close' ? 'Close issue' : 'Reopen issue' }),
+      ],
+    })
+  }
+
+  const label = action === 'close' ? 'close' : 'reopen'
+  const confirmText = issuePlan(repo, n, state).confirm
+  return jsxs('div', {
+    className: 'w-full rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-quaternary) p-2.5 space-y-2 mt-2 text-xs',
+    children: [
+      jsxs('div', {
+        className: 'flex items-center justify-between',
+        children: [
+          jsxs('span', { className: 'font-semibold text-(--ui-text-primary) flex items-center gap-1.5', children: [
+            jsx(Codicon, { name: 'issues' }),
+            jsx('span', { children: confirmText }),
+          ] }),
+          jsx(Button, {
+            size: 'sm',
+            variant: 'ghost',
+            className: 'h-5 w-5 p-0 text-[10px]',
+            disabled: isPending,
+            onClick: () => { setConfirming(false); setError(null) },
+            children: '✕',
+          }),
+        ],
+      }),
+      error ? jsx('div', {
+        className: 'p-2 rounded bg-(--ui-bg-quinary) border border-(--ui-red)/30 text-[11px] text-(--ui-red) font-mono break-words whitespace-pre-wrap',
+        children: error,
+      }) : null,
+      jsxs('div', {
+        className: 'flex gap-2 justify-end pt-1',
+        children: [
+          jsx(Button, {
+            size: 'sm',
+            variant: 'ghost',
+            className: 'h-6 text-xs',
+            disabled: isPending,
+            onClick: () => { setConfirming(false); setError(null) },
+            children: 'Cancel',
+          }),
+          jsxs(Button, {
+            size: 'sm',
+            className: 'h-6 px-2.5 text-xs gap-1.5 disabled:opacity-60',
+            disabled: isPending,
+            onClick: run,
+            children: isPending
+              ? [jsx(GlyphSpinner, {}), jsx('span', { children: label === 'close' ? 'Closing...' : 'Reopening...' })]
+              : [jsx(Codicon, { name: 'issues' }), jsx('span', { children: `Confirm ${label}` })],
+          }),
+        ],
+      }),
+    ],
+  })
+}
+
 function Avatar({ login, size = 20 }) {
   const who = loginOf(login)
   // Issue #25: deleted/renamed logins 404 — fall back to a neutral circle.
@@ -2332,6 +2553,13 @@ function PrDetail({ repo, number, onBack, active = true }) {
     refetchInterval: q => livePollInterval(headerQ.data, { kind: 'checks', checks: q.state.data }),
     refetchOnWindowFocus: true,
   })
+  // Issue #58: viewer login gates the Approve control (never on your own PR).
+  // Same [ID,'user'] cache entry as CommentComposer — one fetch total.
+  const userQ = useQuery({
+    queryKey: [ID, 'user'],
+    queryFn: async () => loginOf(await sh(`${GH} api user --jq .login`)),
+    staleTime: 3_600_000,
+  })
 
   // Codex P1: hook must run every render — placed before any early return
   // with a DOM guard. Previously below the returns, it changed hook count
@@ -2388,6 +2616,9 @@ function PrDetail({ repo, number, onBack, active = true }) {
           ] }),
           prStateKey(d) === 'open' && !d.draft
             ? jsx(MergeControl, { repo, number: d.number, mergeableState: d.mergeable_state, head: d.head, base: d.base })
+            : null,
+          canApprove(prStateKey(d), userQ.data, d.user)
+            ? jsx(ApproveControl, { repo, number: d.number })
             : null,
         ],
       }),
@@ -2485,13 +2716,16 @@ function IssueDetail({ repo, number, onBack, active = true }) {
       jsx(DetailSummary, {
         title: d.title,
         number: d.number,
-        children: jsxs('div', { className: 'gh-detail-meta text-[11px] text-(--ui-text-tertiary)', children: [
-          jsx(StatePill, { d }),
-          jsx(Person, { login: d.author?.login, size: 16 }),
-          jsx('span', { children: ago(d.createdAt) }),
-          jsx(Badge, { variant: 'secondary', className: 'h-5 text-[10px]', children: `${(d.comments || []).length} comments` }),
-          ...(Array.isArray(d.labels) ? d.labels.map(label => jsx(LabelChip, { label }, label.name || label.id)) : []),
-        ] }),
+        children: [
+          jsxs('div', { className: 'gh-detail-meta text-[11px] text-(--ui-text-tertiary)', children: [
+            jsx(StatePill, { d }),
+            jsx(Person, { login: d.author?.login, size: 16 }),
+            jsx('span', { children: ago(d.createdAt) }),
+            jsx(Badge, { variant: 'secondary', className: 'h-5 text-[10px]', children: `${(d.comments || []).length} comments` }),
+            ...(Array.isArray(d.labels) ? d.labels.map(label => jsx(LabelChip, { label }, label.name || label.id)) : []),
+          ] }),
+          jsx(IssueControl, { repo, number: d.number, state: d.state }),
+        ],
       }),
       jsx(ScrollArea, {
         className: 'min-h-0 flex-1',
