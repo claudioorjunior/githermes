@@ -478,6 +478,34 @@ export function repoOk(r) {
   return true
 }
 
+// Issue #56: keep session/persisted repos selectable even when outside gh's first 30.
+// Pins stay in front; remaining discovered names sort A–Z. Case-insensitive dedupe.
+export function mergeRepoOptions({ discovered = [], pinned = [] } = {}) {
+  const seen = new Set()
+  const out = []
+  const take = raw => {
+    const name = String(raw || '').trim()
+    if (!repoOk(name)) return false
+    const key = name.toLowerCase()
+    if (seen.has(key)) return false
+    seen.add(key)
+    out.push(name)
+    return true
+  }
+  for (const p of Array.isArray(pinned) ? pinned : []) take(p)
+  const rest = []
+  for (const d of Array.isArray(discovered) ? discovered : []) {
+    const name = String(d || '').trim()
+    if (!repoOk(name)) continue
+    const key = name.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    rest.push(name)
+  }
+  rest.sort((a, b) => a.localeCompare(b))
+  return out.concat(rest)
+}
+
 export function repoApiPath(repo) {
   return repo.split('/').map(part => /^\.+$/.test(part) ? part.replaceAll('.', '%2E') : part).join('/')
 }
@@ -1097,31 +1125,110 @@ function RepoLabel({ repo, size = 20 }) {
 }
 
 function RepoPicker({ repos, value, onChange }) {
+  const OTHER = '__other__'
+  const [manualOpen, setManualOpen] = useState(false)
   const [manual, setManual] = useState('')
-  if (!repos?.length) {
-    // Issue #24: gate "Use" on the canonical owner/repo validator (repoOk) so
-    // invalid free-text cannot poison downstream queries.
-    const manualOk = repoOk(manual.trim())
-    return jsxs('div', {
-      className: 'flex gap-2',
-      children: [
-        jsx(Input, { placeholder: 'owner/repo', value: manual, onChange: e => setManual(e.target.value), className: 'h-7 flex-1 text-xs' }),
-        jsx(Button, { size: 'sm', className: 'h-7', disabled: !manualOk, onClick: () => { if (manualOk) onChange(manual.trim()) }, children: 'Use' }),
-      ],
-    })
+  const [error, setError] = useState('')
+  const [checking, setChecking] = useState(false)
+  const list = Array.isArray(repos) ? repos : []
+  const showManual = manualOpen || !list.length
+  const manualOk = repoOk(manual.trim())
+
+  const applyManual = async () => {
+    const name = manual.trim()
+    if (!repoOk(name)) {
+      setError('Use owner/repo')
+      return
+    }
+    setChecking(true)
+    setError('')
+    try {
+      // Reachability check — format alone is not enough for "inaccessible".
+      const viewed = await shJson(`${GH} repo view ${sq(name)} --json nameWithOwner`)
+      const resolved = viewed?.nameWithOwner || name
+      if (!repoOk(resolved)) throw new Error('Repository not found')
+      onChange(resolved)
+      setManualOpen(false)
+      setManual('')
+      setError('')
+    } catch (e) {
+      setError(String(e?.message || e || 'Repository not found').slice(0, 200))
+    } finally {
+      setChecking(false)
+    }
   }
-  return jsxs(Select, {
-    value: value || '__none__',
-    onValueChange: v => { if (v !== '__none__') onChange(v) },
+
+  return jsxs('div', {
+    className: 'flex min-w-0 flex-col gap-1.5',
     children: [
-      jsx(SelectTrigger, {
-        className: 'gh-repo-trigger text-xs',
-        children: jsx(SelectValue, {
-          placeholder: 'Select repository',
-          children: value ? jsx(RepoLabel, { repo: value }) : undefined,
-        }),
-      }),
-      jsx(SelectContent, { children: repos.map(r => jsx(SelectItem, { value: r, children: jsx(RepoLabel, { repo: r, size: 18 }) }, r)) }),
+      list.length
+        ? jsxs(Select, {
+          value: showManual ? OTHER : (value || '__none__'),
+          onValueChange: v => {
+            if (v === OTHER) {
+              setManualOpen(true)
+              setError('')
+              return
+            }
+            if (v === '__none__') return
+            setManualOpen(false)
+            setError('')
+            onChange(v)
+          },
+          children: [
+            jsx(SelectTrigger, {
+              className: 'gh-repo-trigger text-xs',
+              children: jsx(SelectValue, {
+                placeholder: 'Select repository',
+                children: showManual
+                  ? jsx('span', { className: 'text-(--ui-text-tertiary)', children: 'Use another repository…' })
+                  : value
+                    ? jsx(RepoLabel, { repo: value })
+                    : undefined,
+              }),
+            }),
+            jsxs(SelectContent, {
+              children: [
+                ...list.map(r => jsx(SelectItem, { value: r, children: jsx(RepoLabel, { repo: r, size: 18 }) }, r)),
+                jsx(SelectItem, { value: OTHER, children: 'Use another repository…' }, OTHER),
+              ],
+            }),
+          ],
+        })
+        : null,
+      showManual
+        ? jsxs('div', {
+          className: 'flex min-w-0 flex-col gap-1',
+          children: [
+            jsxs('div', {
+              className: 'flex gap-2',
+              children: [
+                jsx(Input, {
+                  placeholder: 'owner/repo',
+                  value: manual,
+                  onChange: e => { setManual(e.target.value); if (error) setError('') },
+                  className: 'h-7 flex-1 text-xs',
+                  'aria-invalid': !!error || undefined,
+                }),
+                jsx(Button, {
+                  size: 'sm',
+                  className: 'h-7',
+                  disabled: !manualOk || checking,
+                  onClick: () => { applyManual() },
+                  children: checking ? jsx(GlyphSpinner, {}) : 'Use',
+                }),
+              ],
+            }),
+            error
+              ? jsx('p', {
+                role: 'alert',
+                className: 'text-[11px] text-(--ui-red)',
+                children: error,
+              })
+              : null,
+          ],
+        })
+        : null,
     ],
   })
 }
@@ -2877,6 +2984,14 @@ function useGitHubShellState() {
   const selIssue = useValue($selIssue)
   const cwd = useValue(host.state.cwd)
   const gitQ = useSessionGit(cwd)
+  const savedRepo = pluginCtx?.storage.get('repo')
+  const repoOptions = useMemo(
+    () => mergeRepoOptions({
+      discovered: reposQ.data || [],
+      pinned: [gitQ.data?.repo, savedRepo, repo],
+    }),
+    [reposQ.data, gitQ.data?.repo, savedRepo, repo],
+  )
 
   useEffect(() => {
     const sessionRepo = gitQ.data?.repo
@@ -2888,11 +3003,12 @@ function useGitHubShellState() {
       }
     } else if (gitQ.data) {
       githubShellStore.lastAutoRepo = null // cwd resolved with no repo: re-arm auto-follow
-    } else if (!repo && reposQ.data?.length) {
-      const saved = pluginCtx?.storage.get('repo')
-      $repo.set(saved && reposQ.data.includes(saved) ? saved : reposQ.data[0])
+    } else if (!repo && (reposQ.data || savedRepo)) {
+      // Prefer persisted repo even when it sits outside gh's first 30 (#56).
+      if (savedRepo && repoOk(savedRepo)) $repo.set(savedRepo)
+      else if (repoOptions[0]) $repo.set(repoOptions[0])
     }
-  }, [reposQ.data, gitQ.data, repo])
+  }, [reposQ.data, gitQ.data, repo, savedRepo, repoOptions])
   useEffect(() => { if (repo) pluginCtx?.storage.set('repo', repo) }, [repo])
   // Reset only on a real repo change. Both surfaces share these atoms, so
   // mounting the page or pane must not drop the open detail or search.
@@ -2902,7 +3018,7 @@ function useGitHubShellState() {
     prevRepo.current = repo
   }, [repo])
 
-  return { reposQ, repo, tab, query, selPr, selIssue }
+  return { reposQ, repo, repoOptions, tab, query, selPr, selIssue }
 }
 
 function useListKeyboardFlow(query) {
@@ -2928,7 +3044,7 @@ function useListKeyboardFlow(query) {
 }
 
 function GitHubPane() {
-  const { reposQ, repo, tab, query, selPr, selIssue } = useGitHubShellState()
+  const { reposQ, repo, repoOptions, tab, query, selPr, selIssue } = useGitHubShellState()
   const paneVisible = useValue(typeof host.paneVisibility === 'function' ? host.paneVisibility(PANE_ID) : $alwaysVisible)
   const keyboard = useListKeyboardFlow(query)
 
@@ -2959,7 +3075,7 @@ function GitHubPane() {
             children: [
               reposQ.isLoading
                 ? jsx(Skeleton, { className: 'h-8 flex-1 rounded-md' })
-                : jsx('div', { className: 'min-w-0 flex-1', children: jsx(RepoPicker, { repos: reposQ.data || [], value: repo, onChange: v => $repo.set(v) }) }),
+                : jsx('div', { className: 'min-w-0 flex-1', children: jsx(RepoPicker, { repos: repoOptions, value: repo, onChange: v => $repo.set(v) }) }),
               jsx(Button, { variant: 'ghost', size: 'sm', className: 'h-7 w-7 p-0 ml-auto', onClick: () => queryClient.invalidateQueries({ queryKey: [ID] }), 'aria-label': 'Refresh GitHub data', children: jsx(icons.RefreshCw, { className: 'size-3' }) }),
             ],
           }),
@@ -2998,7 +3114,7 @@ function GitHubPane() {
 }
 
 function GithubPage() {
-  const { reposQ, repo, tab, query, selPr, selIssue } = useGitHubShellState()
+  const { reposQ, repo, repoOptions, tab, query, selPr, selIssue } = useGitHubShellState()
   const keyboard = useListKeyboardFlow(query)
 
   const showPr = tab === 'prs' && selPr != null
@@ -3036,7 +3152,7 @@ function GithubPage() {
               }),
               reposQ.isLoading
                 ? jsx(Skeleton, { className: 'h-8 w-full max-w-[420px] rounded-md' })
-                : jsx('div', { className: 'max-w-[420px]', children: jsx(RepoPicker, { repos: reposQ.data || [], value: repo, onChange: v => $repo.set(v) }) }),
+                : jsx('div', { className: 'max-w-[420px]', children: jsx(RepoPicker, { repos: repoOptions, value: repo, onChange: v => $repo.set(v) }) }),
               jsx(SegmentedControl, {
                 value: tab,
                 onChange: v => $tab.set(v),
