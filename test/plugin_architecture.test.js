@@ -166,3 +166,13 @@ test('Issue #56: repo picker merges pins and reveals validated manual input', ()
   assert.ok(picker.includes("role: 'alert'"))
   assert.ok(picker.includes('onChange(resolved)'))
 })
+
+test('Issue #64 review: a pending manual check cannot revert a newer repo', () => {
+  const picker = source.slice(source.indexOf('function RepoPicker'), source.indexOf('export function labelTextColor'))
+  assert.ok(picker.includes('const valueRef = useRef(value)'), 'latest-value ref missing')
+  assert.ok(picker.includes('useEffect(() => { valueRef.current = value })'))
+  assert.ok(picker.includes('const startValue = valueRef.current'))
+  const guard = picker.indexOf('if (valueRef.current !== startValue) return')
+  const apply = picker.indexOf('onChange(resolved)')
+  assert.ok(guard >= 0 && guard < apply, 'stale-completion guard must run before onChange')
+})

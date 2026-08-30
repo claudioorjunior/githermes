@@ -1130,6 +1130,10 @@ function RepoPicker({ repos, value, onChange }) {
   const [manual, setManual] = useState('')
   const [error, setError] = useState('')
   const [checking, setChecking] = useState(false)
+  // Latest controlled value. A pending `gh repo view` must not revert an
+  // external change (session auto-follow, the other picker surface).
+  const valueRef = useRef(value)
+  useEffect(() => { valueRef.current = value })
   const list = Array.isArray(repos) ? repos : []
   const showManual = manualOpen || !list.length
   const manualOk = repoOk(manual.trim())
@@ -1147,9 +1151,13 @@ function RepoPicker({ repos, value, onChange }) {
     }
     setChecking(true)
     setError('')
+    const startValue = valueRef.current
     try {
       // Reachability check — format alone is not enough for "inaccessible".
       const viewed = await shJson(`${GH} repo view ${sq(name)} --json nameWithOwner`)
+      // #64 review: value changed while pending (auto-follow / other surface) —
+      // a stale completion must not revert the newer selection.
+      if (valueRef.current !== startValue) return
       const resolved = viewed?.nameWithOwner || name
       if (!repoOk(resolved)) throw new Error('Repository not found')
       onChange(resolved)
