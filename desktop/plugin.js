@@ -1134,6 +1134,11 @@ function RepoPicker({ repos, value, onChange }) {
   const showManual = manualOpen || !list.length
   const manualOk = repoOk(manual.trim())
 
+  // #65 review: an external value change (session auto-follow, the other picker
+  // surface) must close stale manual mode or the trigger keeps showing the
+  // sentinel while queries already use the new repo.
+  useEffect(() => { setManualOpen(false); setManual(''); setError('') }, [value])
+
   const applyManual = async () => {
     const name = manual.trim()
     if (!repoOk(name)) {
