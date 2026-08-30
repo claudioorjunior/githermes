@@ -1130,10 +1130,11 @@ function RepoPicker({ repos, value, onChange }) {
   const [manual, setManual] = useState('')
   const [error, setError] = useState('')
   const [checking, setChecking] = useState(false)
-  // Latest controlled value. A pending `gh repo view` must not revert an
-  // external change (session auto-follow, the other picker surface).
+  // Latest controlled value, synced during render (latest-ref pattern): a
+  // pending `gh repo view` must never observe a pre-commit value and revert
+  // an external change (session auto-follow, the other picker surface).
   const valueRef = useRef(value)
-  useEffect(() => { valueRef.current = value })
+  valueRef.current = value
   const list = Array.isArray(repos) ? repos : []
   const showManual = manualOpen || !list.length
   const manualOk = repoOk(manual.trim())
