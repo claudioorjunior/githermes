@@ -224,6 +224,8 @@ const PANE_WRAP_CSS = `
 }
 `
 
+// Shell-quotes one argument (POSIX single quotes). Every value interpolated
+// into a gh/git command goes through this — never build a quoted string by hand.
 function sq(s) {
   return "'" + String(s).replace(/'/g, "'\\''") + "'"
 }
@@ -438,6 +440,7 @@ async function sh(cmd) {
   return (r.stdout || '').trim()
 }
 
+// btoa() throws on non-Latin-1 chars, so UTF-8 must be byte-encoded first.
 function utf8ToB64(text) {
   const bytes = new TextEncoder().encode(String(text))
   let bin = ''
@@ -506,6 +509,8 @@ export function mergeRepoOptions({ discovered = [], pinned = [] } = {}) {
   return out.concat(rest)
 }
 
+// A dot-only repo name would resolve as a path segment in `gh api
+// repos/owner/./…`, so percent-encode it; other names pass through untouched.
 export function repoApiPath(repo) {
   return repo.split('/').map(part => /^\.+$/.test(part) ? part.replaceAll('.', '%2E') : part).join('/')
 }
@@ -612,7 +617,7 @@ export function projectIssueComments(items) {
 async function ghApiBigPaginatedProjected(repo, path, jq) {
   const items = await ghApiBigPaginated(repo, path)
   if (!jq || !items.length) return items
-  // Codex P1+P2: avoid `jq` binary and large-payload printf arg — project in JS.
+  // Project in JS, not `jq`: the binary may be absent and a large printf arg overflows argv.
   const proj = projectionBody(jq)
   // Recognize the two projections used by this plugin; fall back to raw items.
   if (proj.includes('diff_hunk')) {
@@ -825,7 +830,7 @@ export function matchesListQuery(item, query) {
   if (authors.some(value => !author.includes(value))) return false
   if (labels.some(value => !itemLabels.some(label => label.includes(value)))) return false
   if (!text) return true
-  // Codex P2: #42 must not match #142 — exact number before substring
+  // #42 must not match #142 — exact number before substring
   if (text.startsWith('#')) {
     const n = numericListQuery(text)
     if (n != null) return item?.number === n
@@ -962,7 +967,7 @@ function useSessionGit(cwd) {
   })
 }
 
-// Orca/T3Code: linked review = branch PR, else last PR url in the transcript.
+// Linked review = branch PR, else last PR URL in the transcript.
 function useSessionPr(cwd, sessionId) {
   const gitQ = useSessionGit(cwd)
   const repo = gitQ.data?.repo
@@ -1134,9 +1139,9 @@ function RepoPicker({ repos, value, onChange }) {
   const showManual = manualOpen || !list.length
   const manualOk = repoOk(manual.trim())
 
-  // #65 review: an external value change (session auto-follow, the other picker
-  // surface) must close stale manual mode or the trigger keeps showing the
-  // sentinel while queries already use the new repo.
+  // An external value change (session auto-follow, the other picker surface)
+  // must close stale manual mode or the trigger keeps showing the sentinel
+  // while queries already use the new repo.
   useEffect(() => { setManualOpen(false); setManual(''); setError('') }, [value])
 
   const applyManual = async () => {
@@ -1885,7 +1890,7 @@ function Avatar({ login, size = 20 }) {
   const who = loginOf(login)
   // Issue #25: deleted/renamed logins 404 — fall back to a neutral circle.
   // failedLogin (not a boolean): an instance reused for another login must
-  // retry the image instead of staying neutral forever (pullfrog review #40).
+  // retry the image instead of staying neutral forever.
   const [failedLogin, setFailedLogin] = useState(null)
   if (!who || failedLogin === who) {
     return jsx('span', { className: 'inline-block rounded-full shrink-0 bg-(--ui-bg-quaternary)', style: { width: size, height: size } })
@@ -2404,7 +2409,7 @@ function IssueList({ repo, onOpen, query, active = true }) {
 
 function AssignToBot({ kind, repo, number }) {
   const [open, setOpen] = useState(false)
-  // Issue #60 review: session.create needs cwd to land the bot in the checked-out
+  // Issue #60: session.create needs cwd to land the bot in the checked-out
   // repo. Guarded inside buildAssignPlan (only when it matches this item's repo);
   // reuses the cached [ID,'session-git',cwd] entry instead of shelling out again.
   const cwd = useValue(host.state.cwd)
@@ -2747,12 +2752,11 @@ function PrDetail({ repo, number, onBack, active = true }) {
     staleTime: 3_600_000,
   })
 
-  // Codex P1: hook must run every render — placed before any early return
-  // with a DOM guard. Previously below the returns, it changed hook count
-  // between loading / loaded renders (React "more hooks" crash).
-  // Codex P2 3827144614: if convQ resolves before headerQ, the effect fires
-  // while loading (no viewport) and would not re-fire when headerQ mounts
-  // unless headerQ is a dep.
+  // Hook order: must run every render — placed before any early return
+  // with a DOM guard. Below the returns it changed hook count between
+  // loading / loaded renders (React "more hooks" crash).
+  // Deps: if convQ resolves before headerQ, the effect fires while loading
+  // (no viewport) and would not re-fire when headerQ mounts unless headerQ is a dep.
   useEffect(() => {
     const el = convEndRef.current?.closest('[data-radix-scroll-area-viewport]')
     if (!el) return
@@ -2835,7 +2839,7 @@ function PrDetail({ repo, number, onBack, active = true }) {
       jsxs('div', { className: 'relative flex-1 min-h-0', children: [
         jsx(ScrollArea, {
           className: 'h-full',
-          // Pullfrog: nested Markdown scrollers (code blocks) also bubble via
+          // Nested Markdown scrollers (code blocks) also bubble via
           // capture with e.target = that scroller — ignore unless it's the
           // conversation viewport.
           onScrollCapture: e => {
