@@ -44,6 +44,8 @@ import {
   assignHostReady,
   assignToBot,
   updateBotAssignment,
+  formatAskHermesPrompt,
+  mergeRepoOptions,
 } from '../desktop/plugin.js'
 
 test('Issue #13: labelTextColor chooses high-contrast text color based on luminance', () => {
@@ -724,6 +726,49 @@ test('assignToBot refuses a reserved Bot Chat title', async () => {
     /Refusing reserved Bot Chat title/,
   )
   assert.equal(calls.length, 0)
+})
+
+// Issue #54: contextual Ask Hermes prompts — stable IDs only, no bodies/diffs.
+test('formatAskHermesPrompt builds insert-only prompts with stable identifiers', () => {
+  assert.equal(
+    formatAskHermesPrompt({ action: 'pr', repo: 'acme/app', number: 42 }),
+    'Look at acme/app#42 (pull request). What stands out and what still needs attention?',
+  )
+  assert.equal(
+    formatAskHermesPrompt({ action: 'issue', repo: 'acme/app', number: 54 }),
+    'Plan a fix for acme/app#54.',
+  )
+  assert.equal(
+    formatAskHermesPrompt({ action: 'checks', repo: 'acme/app', number: 42, checkNames: ['lint', 'test'] }),
+    'Investigate failing checks on acme/app#42: lint, test.',
+  )
+  assert.equal(
+    formatAskHermesPrompt({
+      action: 'thread',
+      repo: 'acme/app',
+      number: 42,
+      threadUrl: 'https://github.com/acme/app/pull/42#discussion_r1',
+    }),
+    'Explain this review thread on acme/app#42: https://github.com/acme/app/pull/42#discussion_r1',
+  )
+  assert.equal(formatAskHermesPrompt({ action: 'pr', repo: 'bad', number: 1 }), '')
+  assert.equal(formatAskHermesPrompt({ action: 'checks', repo: 'acme/app', number: 1, checkNames: [] }), '')
+  assert.equal(formatAskHermesPrompt({ action: 'thread', repo: 'acme/app', number: 1 }), '')
+  assert.equal(formatAskHermesPrompt({ action: 'nope', repo: 'acme/app', number: 1 }), '')
+})
+
+// Issue #56: session/persisted pins stay selectable even outside gh's first 30.
+test('mergeRepoOptions pins session/saved repos and dedupes case-insensitively', () => {
+  assert.deepEqual(
+    mergeRepoOptions({
+      discovered: ['zeta/app', 'acme/app', 'other/x'],
+      pinned: ['Acme/App', 'solo/pin', 'bad', ''],
+    }),
+    ['Acme/App', 'solo/pin', 'other/x', 'zeta/app'],
+  )
+  assert.deepEqual(mergeRepoOptions({ discovered: null, pinned: ['ok/repo'] }), ['ok/repo'])
+  assert.deepEqual(mergeRepoOptions({}), [])
+  assert.deepEqual(mergeRepoOptions({ discovered: ['nope', 'a/b'], pinned: ['a/b'] }), ['a/b'])
 })
 
 const RESERVED_LOOKALIKES = ['Bot Chat', 'Agent Inbox']
