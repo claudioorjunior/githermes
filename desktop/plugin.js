@@ -368,6 +368,29 @@ export function commentToChatText({ login, verb, timestamp, body, permalink }) {
   return parts.join('\n')
 }
 
+// Issue #54: draft-only Ask Hermes prompts. Stable IDs only — no bodies, diffs, or model calls.
+export function formatAskHermesPrompt({ action, repo, number, checkNames, threadUrl } = {}) {
+  const repoName = String(repo || '').trim()
+  const n = Number(number)
+  if (!repoOk(repoName) || !Number.isInteger(n) || n <= 0) return ''
+  const ref = `${repoName}#${n}`
+  if (action === 'pr') return `Look at ${ref} (pull request). What stands out and what still needs attention?`
+  if (action === 'issue') return `Plan a fix for ${ref}.`
+  if (action === 'checks') {
+    const names = (Array.isArray(checkNames) ? checkNames : [])
+      .map(name => String(name || '').trim())
+      .filter(Boolean)
+    if (!names.length) return ''
+    return `Investigate failing checks on ${ref}: ${names.join(', ')}.`
+  }
+  if (action === 'thread') {
+    const url = String(threadUrl || '').trim()
+    if (!/^https:\/\/github\.com\//i.test(url)) return ''
+    return `Explain this review thread on ${ref}: ${url}`
+  }
+  return ''
+}
+
 export function livePollInterval(data, opts) {
   const state = String(data?.state || '').toUpperCase()
   const terminal = !!(data?.merged || state === 'MERGED' || state === 'CLOSED')
@@ -393,15 +416,20 @@ export function commentBodyOk(body) {
   return !!text.trim() && text.length <= COMMENT_MAX
 }
 
-function sendCommentToChat(c) {
-  const text = commentToChatText(c)
-  if (!text.trim()) return
+// Issue #1 / #54: insert into the active session composer as a draft (never auto-send).
+function insertComposerText(text) {
+  const body = String(text || '')
+  if (!body.trim()) return
   // Defer like core's dispatch() (focus.ts): the composer must focus AFTER this
   // click handler finishes, or the browser re-focuses the clicked button.
   window.setTimeout(() => {
-    window.dispatchEvent(new CustomEvent(COMPOSER_INSERT, { detail: { mode: 'block', target: 'main', text } }))
+    window.dispatchEvent(new CustomEvent(COMPOSER_INSERT, { detail: { mode: 'block', target: 'main', text: body } }))
     window.dispatchEvent(new CustomEvent(COMPOSER_FOCUS, { detail: { target: 'main' } }))
   }, 0)
+}
+
+function sendCommentToChat(c) {
+  insertComposerText(commentToChatText(c))
 }
 
 async function sh(cmd) {
@@ -1337,7 +1365,7 @@ function CommitRow({ repo, commit }) {
   })
 }
 
-function ChecksView({ checks, loading, error, onRetry, compact = false }) {
+function ChecksView({ checks, loading, error, onRetry, compact = false, repo, number }) {
   // Local open state (CommitRow pattern, #22): the computed default would
   // re-assert itself and snap the panel closed on every parent re-render.
   const [openOverride, setOpenOverride] = useState(null)
@@ -1346,6 +1374,10 @@ function ChecksView({ checks, loading, error, onRetry, compact = false }) {
   if (!checks.length) return compact ? null : jsx(EmptyState, { title: 'No checks', description: 'Nothing reported for this PR.' })
   const summary = summarizeChecks(checks)
   const tone = summary.fail ? 'bad' : summary.pending || summary.cancel ? 'warn' : summary.other ? 'warn' : 'good'
+  const failingNames = checks
+    .filter(c => String(c?.bucket || '').toLowerCase() === 'fail')
+    .map(c => c.name)
+    .filter(Boolean)
   const counts = [
     summary.fail ? `${summary.fail} fail` : null,
     summary.pending ? `${summary.pending} pending` : null,
@@ -1358,6 +1390,9 @@ function ChecksView({ checks, loading, error, onRetry, compact = false }) {
     jsx(StatusDot, { tone }),
     jsx('span', { className: 'text-xs font-medium text-(--ui-text-primary)', children: summary.title }),
     counts ? jsx('span', { className: 'text-[10px] text-(--ui-text-quaternary)', children: counts }) : null,
+    failingNames.length
+      ? jsx(AskHermesButton, { action: 'checks', repo, number, checkNames: failingNames, label: 'Investigate failing checks', className: 'ml-auto' })
+      : null,
   ] })
   const list = jsx('div', { className: 'space-y-0.5', children: sortChecks(checks).map(c => jsxs('button', {
     type: 'button',
@@ -1819,9 +1854,32 @@ function SendToChatButton({ comment, className }) {
   return jsx(Tip, { label: 'Quote in chat', children: jsx('span', { className: wrap, children: btn }) })
 }
 
+// Issue #54: context-gated Ask Hermes insert. Renders nothing when the prompt
+// cannot be built (missing context). Draft only — never auto-sends.
+function AskHermesButton({ action, repo, number, checkNames, threadUrl, label, className }) {
+  const activeId = useValue(host.state.activeSessionId)
+  const text = formatAskHermesPrompt({ action, repo, number, checkNames, threadUrl })
+  if (!text) return null
+  const wrap = cn('inline-flex shrink-0', className)
+  const btn = jsx(Button, {
+    variant: 'ghost',
+    size: 'sm',
+    className: 'h-7 px-2 text-[11px]',
+    'aria-label': label,
+    disabled: !activeId,
+    onClick: e => {
+      e.stopPropagation()
+      insertComposerText(text)
+    },
+    children: label,
+  })
+  if (!activeId) return jsx('span', { className: wrap, title: 'No active session — open a chat first', children: btn })
+  return jsx(Tip, { label, children: jsx('span', { className: wrap, children: btn }) })
+}
+
 // Open conversation row: Copilot-style attributed content without a box around every message.
 // Issue #9: inline review comments add a file:line chip and a collapsed diff-hunk block.
-function CommentCard({ login, verb, time, timestamp, reviewState, body, permalink, size = 18, fileChip, hunk }) {
+function CommentCard({ login, verb, time, timestamp, reviewState, body, permalink, size = 18, fileChip, hunk, askThread }) {
   const badge = reviewState ? REVIEW_BADGE[String(reviewState).toUpperCase()] : null
   return jsxs('article', { className: 'gh-comment flex items-start gap-2.5 py-1', children: [
     jsx('span', { className: 'gh-comment-avatar shrink-0 pt-0.5', children: jsx(Avatar, { login, size: Math.max(size, 22) }) }),
@@ -1844,6 +1902,16 @@ function CommentCard({ login, verb, time, timestamp, reviewState, body, permalin
             ] }) : null,
           ] }) : null,
         ] }),
+        askThread
+          ? jsx(AskHermesButton, {
+            action: 'thread',
+            repo: askThread.repo,
+            number: askThread.number,
+            threadUrl: askThread.url,
+            label: 'Explain this review thread',
+            className: 'gh-comment-action',
+          })
+          : null,
         jsx(SendToChatButton, { comment: { login, verb, timestamp, body, permalink }, className: 'gh-comment-action' }),
       ] }),
       hunk ? jsx('details', { className: 'mt-2 rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-quaternary) px-2.5 py-1.5', children: [
@@ -2338,6 +2406,11 @@ function AssignToBot({ kind, repo, number }) {
 
 function DetailToolbar({ repo, number, url, title, kind, checkoutCommand, onBack, backLabel }) {
   const [owner, name] = String(repo || '').split('/')
+  const ask = kind === 'pr'
+    ? jsx(AskHermesButton, { action: 'pr', repo, number, label: 'Ask Hermes about PR' })
+    : kind === 'issue'
+      ? jsx(AskHermesButton, { action: 'issue', repo, number, label: 'Plan fix for this issue' })
+      : null
   return jsxs('div', {
     className: 'shrink-0 border-b border-(--ui-stroke-secondary) bg-(--ui-editor-surface-background) px-3 py-2 flex items-center gap-1.5 text-xs text-(--ui-text-tertiary)',
     children: [
@@ -2348,6 +2421,7 @@ function DetailToolbar({ repo, number, url, title, kind, checkoutCommand, onBack
         jsx('span', { className: 'font-medium text-(--ui-text-primary)', children: name }),
       ] }),
       url ? jsxs('span', { className: 'ml-auto flex shrink-0 items-center gap-0.5', children: [
+        ask,
         jsx(AssignToBot, { kind, repo, number }),
         checkoutCommand ? jsx(CopyButton, { appearance: 'icon', buttonSize: 'icon-sm', label: 'Copy checkout command', text: checkoutCommand }) : null,
         jsx(CopyButton, { appearance: 'icon', buttonSize: 'icon-sm', label: 'Copy GitHub URL', text: url }),
@@ -2583,10 +2657,20 @@ function PrDetail({ repo, number, onBack, active = true }) {
     if (kind === 'review') return jsx(CommentCard, { login: item.user, verb: 'reviewed', time: ago(item.submitted_at), timestamp: item.submitted_at, reviewState: item.state, body: item.body, permalink: item.html_url }, `r-${index}`)
     if (kind === 'comment') return jsx(CommentCard, { login: item.user, verb: 'commented', time: ago(item.created_at), timestamp: item.created_at, body: item.body, permalink: item.html_url }, `c-${index}`)
     return jsxs('div', { className: 'gh-timeline', children: [
-      jsx(CommentCard, { login: item.root.user, verb: 'commented on the diff', time: ago(item.root.created_at), timestamp: item.root.created_at, body: item.root.body, permalink: item.root.html_url, fileChip: inlineFileChip(item.root), hunk: item.root.diff_hunk || undefined }, `t-${index}-root`),
+      jsx(CommentCard, {
+        login: item.root.user,
+        verb: 'commented on the diff',
+        time: ago(item.root.created_at),
+        timestamp: item.root.created_at,
+        body: item.root.body,
+        permalink: item.root.html_url,
+        fileChip: inlineFileChip(item.root),
+        hunk: item.root.diff_hunk || undefined,
+        askThread: item.root.html_url ? { repo, number: n, url: item.root.html_url } : null,
+      }, `t-${index}-root`),
       ...item.replies.map((reply, replyIndex) => jsx('div', { className: 'ml-4', children: jsx(CommentCard, { login: reply.user, verb: 'replied', time: ago(reply.created_at), timestamp: reply.created_at, body: reply.body, permalink: reply.html_url, fileChip: inlineFileChip(reply) }, `t-${index}-${replyIndex}`) })),
     ] }, `t-${index}`)
-  }), [convQ.data?.reviews, convQ.data?.comments, convQ.data?.threads])
+  }), [convQ.data?.reviews, convQ.data?.comments, convQ.data?.threads, repo, n])
 
   const d = headerQ.data
   if (headerQ.isLoading) return jsx(DetailLoading, { repo, number, onBack, backLabel: 'Back to pull requests' })
@@ -2651,7 +2735,7 @@ function PrDetail({ repo, number, onBack, active = true }) {
             page === 'conversation'
               ? jsxs('div', { className: 'gh-timeline p-3', children: [
                   jsx(CommentCard, { login: d.user, verb: 'described this', body: d.body, timestamp: d.created_at, permalink: url, size: 20 }),
-                  jsx(ChecksView, { checks, loading: checksQ.isLoading, error: checksQ.isError ? checksQ.error : null, onRetry: () => checksQ.refetch(), compact: true }),
+                  jsx(ChecksView, { checks, loading: checksQ.isLoading, error: checksQ.isError ? checksQ.error : null, onRetry: () => checksQ.refetch(), compact: true, repo, number: n }),
                   convQ.isLoading
                     ? jsx(Skeleton, { className: 'h-24 w-full rounded-md' })
                     : timeline.length
@@ -2662,7 +2746,7 @@ function PrDetail({ repo, number, onBack, active = true }) {
               : page === 'commits'
                 ? jsx('div', { className: 'p-3', children: jsx(CommitsView, { repo, commits, loading: commitsQ.isLoading, error: commitsQ.isError ? commitsQ.error : null, onRetry: () => commitsQ.refetch() }) })
                 : page === 'checks'
-                  ? jsx('div', { className: 'p-3', children: jsx(ChecksView, { checks, loading: checksQ.isLoading, error: checksQ.isError ? checksQ.error : null, onRetry: () => checksQ.refetch() }) })
+                  ? jsx('div', { className: 'p-3', children: jsx(ChecksView, { checks, loading: checksQ.isLoading, error: checksQ.isError ? checksQ.error : null, onRetry: () => checksQ.refetch(), repo, number: n }) })
                   : jsx('div', { className: 'p-3', children: jsx(FilesView, { files, loading: filesQ.isLoading, error: filesQ.isError ? filesQ.error : null, onRetry: () => filesQ.refetch() }) }),
         }),
         page === 'conversation' && !atBottom ? jsxs('button', {
