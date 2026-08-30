@@ -334,7 +334,7 @@ test('projectInlineComments guarantees user is a string, never the REST user obj
 })
 
 test('numericListQuery detects exact-number searches for server-side lookup', () => {
-  // Codex P2: `#42`/`42` must escape the 30-row client filter; text stays local.
+  // `#42`/`42` must escape the 30-row client filter; text stays local.
   assert.equal(numericListQuery('#42'), 42)
   assert.equal(numericListQuery('42'), 42)
   assert.equal(numericListQuery('  #7 '), 7)
@@ -497,7 +497,7 @@ test('Issue #23: isNoChecksError matches gh "no checks reported" exit-1 message'
   assert.ok(isNoChecksError({ message: 'gh: no checks reported yet' }))
   // Real errors must NOT be swallowed
   assert.ok(!isNoChecksError(new Error('exit 1: unknown revision ref/main')))
-  // Collision regression (pullfrog review #38): outage-style stderr containing
+  // Collision regression: outage-style stderr containing
   // "no checks" must NOT be swallowed — only the documented phrase matches.
   assert.ok(!isNoChecksError(new Error('API request failed: no checks service unavailable')))
   assert.ok(!isNoChecksError(null))
