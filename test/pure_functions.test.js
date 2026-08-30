@@ -45,6 +45,7 @@ import {
   assignToBot,
   updateBotAssignment,
   formatAskHermesPrompt,
+  mergeRepoOptions,
 } from '../desktop/plugin.js'
 
 test('Issue #13: labelTextColor chooses high-contrast text color based on luminance', () => {
@@ -754,6 +755,20 @@ test('formatAskHermesPrompt builds insert-only prompts with stable identifiers',
   assert.equal(formatAskHermesPrompt({ action: 'checks', repo: 'acme/app', number: 1, checkNames: [] }), '')
   assert.equal(formatAskHermesPrompt({ action: 'thread', repo: 'acme/app', number: 1 }), '')
   assert.equal(formatAskHermesPrompt({ action: 'nope', repo: 'acme/app', number: 1 }), '')
+})
+
+// Issue #56: session/persisted pins stay selectable even outside gh's first 30.
+test('mergeRepoOptions pins session/saved repos and dedupes case-insensitively', () => {
+  assert.deepEqual(
+    mergeRepoOptions({
+      discovered: ['zeta/app', 'acme/app', 'other/x'],
+      pinned: ['Acme/App', 'solo/pin', 'bad', ''],
+    }),
+    ['Acme/App', 'solo/pin', 'other/x', 'zeta/app'],
+  )
+  assert.deepEqual(mergeRepoOptions({ discovered: null, pinned: ['ok/repo'] }), ['ok/repo'])
+  assert.deepEqual(mergeRepoOptions({}), [])
+  assert.deepEqual(mergeRepoOptions({ discovered: ['nope', 'a/b'], pinned: ['a/b'] }), ['a/b'])
 })
 
 const RESERVED_LOOKALIKES = ['Bot Chat', 'Agent Inbox']
