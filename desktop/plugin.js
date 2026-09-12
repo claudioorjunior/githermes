@@ -1137,6 +1137,36 @@ function SessionPrStatus() {
   })
 }
 
+// Session branch as a status-bar item (right, before the PR pill). Shows the
+// focused session's working branch; null without git state.
+function SessionBranchStatus() {
+  const cwd = useValue(host.state.cwd)
+  const gitQ = useSessionGit(cwd)
+  const branch = gitQ.data?.branch
+  const repo = gitQ.data?.repo
+
+  if (!cwd || !branch || !repo) return null
+
+  const openRepo = () => {
+    $repo.set(repo)
+    openGithubPane()
+  }
+
+  return jsx(Tip, {
+    label: `${repo} · ${branch}`,
+    children: jsxs('button', {
+      type: 'button',
+      onClick: openRepo,
+      'aria-label': `Open GitHub pane for branch ${branch}`,
+      className: 'inline-flex h-full min-w-0 max-w-[180px] items-center gap-1 px-1.5 text-[0.6875rem] text-(--ui-text-tertiary) hover:text-(--ui-text-primary)',
+      children: [
+        jsx(Codicon, { name: 'git-branch', size: 12, className: 'text-(--ui-green)' }),
+        jsx('span', { className: 'truncate tabular-nums', children: `${repo} · ${branch}` }),
+      ],
+    }),
+  })
+}
+
 function RepoLabel({ repo, size = 20 }) {
   const [owner, name] = String(repo || '').split('/')
   return jsxs('span', { className: 'flex min-w-0 items-center gap-2 text-left', children: [
@@ -3328,6 +3358,7 @@ export default {
       data: { id: 'githermes.open-page', label: 'GitHub: Open page', keywords: ['github', 'page', 'pr', 'issue'], run: openGithubPage },
     })
     ctx.register({ id: 'titlebar-github', area: TITLEBAR_AREAS.right, order: 20, render: () => jsx(TitlebarGithubButton, {}) })
+    ctx.register({ id: 'statusbar-session-branch', area: STATUSBAR_AREAS.right, order: 84, render: () => jsx(SessionBranchStatus, {}) })
     ctx.register({ id: 'statusbar-session-pr', area: STATUSBAR_AREAS.right, order: 85, render: () => jsx(SessionPrStatus, {}) })
   },
 }
