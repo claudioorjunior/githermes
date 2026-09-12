@@ -7,8 +7,10 @@ const source = readFileSync(new URL('../desktop/plugin.js', import.meta.url), 'u
 test('Issue #26: pane and page share one repository-selection shell', () => {
   assert.ok(source.includes('function useGitHubShellState()'), 'shared shell hook is missing')
   assert.equal((source.match(/const reposQ = useRepos\(\)/g) || []).length, 1)
-  // One existing use lives in useSessionPr; shell selection must add only one more.
-  assert.equal((source.match(/const gitQ = useSessionGit\(cwd\)/g) || []).length, 2)
+  // One existing use lives in useSessionPr, one in the status-bar branch item
+  // (same query key, so the cache still fetches once); shell selection must
+  // add only one more.
+  assert.equal((source.match(/const gitQ = useSessionGit\(cwd\)/g) || []).length, 3)
   assert.equal((source.match(/useGitHubShellState\(\)/g) || []).length, 3)
   assert.equal((source.match(/placeholder: 'Filter by title, #number, author, branch or label'/g) || []).length, 2)
 })
@@ -195,6 +197,16 @@ test('Issue #55: lists cap explicitly and load more on demand', () => {
 })
 
 test('Session branch lives in the status bar and hides without git state', () => {
+  const status = source.slice(source.indexOf('function SessionBranchStatus'), source.indexOf('function RepoLabel'))
+  assert.ok(status.includes('if (!cwd || !branch || !repo) return null'), 'no footprint without git state, never a stale repo')
+  assert.ok(status.includes('`${repo} · ${branch}`'), 'visible label carries repo context per #69')
+  assert.ok(status.includes('max-w-[180px]'), 'status-bar item needs a width ceiling')
+  assert.ok(status.includes("size: 12"), 'font-glyph icon sizes via the size prop, not layout classes')
+  assert.ok(status.includes('text-(--ui-green)'), 'branch glyph matches the composer coding row')
+  assert.ok(source.includes("id: 'statusbar-session-branch'"), 'registered next to the PR pill')
+})
+
+test('Session PR lives in the status bar and hides without a linked PR', () => {
   const status = source.slice(source.indexOf('function SessionPrStatus'), source.indexOf('function RepoLabel'))
   assert.ok(status.includes('if (!cwd || !pr) return null'), 'no footprint without a linked PR')
   assert.ok(status.includes('max-w-[220px]'), 'status-bar item needs a width ceiling')
