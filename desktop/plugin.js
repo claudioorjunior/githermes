@@ -2,7 +2,7 @@
  * GitHermes — GitHub PRs & Issues as a right workspace pane.
  * GitHub data via `host.request('shell.exec')` + connected `gh`; Bot assignment via gateway session RPCs. No backend.
  * Session PR: cwd git branch (same join as core review) + transcript URL scan.
- * ponytail: lists cap at 30 rows by design; payloads route through shBig (stdout 4000 cap).
+ * ponytail: lists page from a 30-row window up to a 120 cap; payloads route through shBig (stdout 4000 cap).
  */
 import {
   host,
@@ -2338,6 +2338,9 @@ function PrList({ repo, onOpen, query, active = true }) {
   const q = useQuery({
     queryKey: [ID, 'prs', repo, state, limit],
     enabled: !!repo && active,
+    // Growth changes the key: hold previous rows through the fetch (and the
+    // error that may follow) instead of flashing the skeleton.
+    placeholderData: (prev) => prev,
     // Issue #10: expanded list metadata can overflow the stdout cap, so the
     // list routes through shBig.
     queryFn: () => shJsonBig(`${GH} pr list --repo ${sq(repo)} --state ${sq(state)} --limit ${limit} --json number,title,state,author,updatedAt,url,baseRefName,headRefName,isDraft,additions,deletions,changedFiles,reviewDecision,statusCheckRollup,labels`),
@@ -2415,6 +2418,8 @@ function IssueList({ repo, onOpen, query, active = true }) {
   const q = useQuery({
     queryKey: [ID, 'issues', repo, state, limit],
     enabled: !!repo && active,
+    // Same key-growth hold as the PR list above.
+    placeholderData: (prev) => prev,
     // Issue #10: same stdout-cap routing as the PR list (busy repos overflow).
     queryFn: () => shJsonBig(`${GH} issue list --repo ${sq(repo)} --state ${sq(state)} --limit ${limit} --json number,title,state,author,updatedAt,url,labels`),
     staleTime: 15_000,

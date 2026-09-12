@@ -188,6 +188,7 @@ test('Issue #55: lists cap explicitly and load more on demand', () => {
     assert.ok(list.includes('const [limit, setLimit] = useState(30)'), `${name}: limit state missing`)
     assert.ok(list.includes('--limit ${limit}'), `${name}: limit not wired into the query`)
     assert.ok(list.includes('Showing latest'), `${name}: cap label missing`)
+    assert.ok(list.includes('placeholderData: (prev) => prev'), `${name}: growth must hold rows`)
     assert.ok(list.includes('ListMoreFooter({ q, limit, setLimit, allItems })'), `${name}: footer not wired`)
     assert.ok(list.includes('q.isError && !allItems.length'), `${name}: refetch failure must keep rows`)
   }
