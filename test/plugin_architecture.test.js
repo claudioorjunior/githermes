@@ -188,9 +188,7 @@ test('Session PR lives in the status bar and hides without a linked PR', () => {
 
 test('Merged transcript PRs unlink: session falls back until the next PR', () => {
   const hook = source.slice(source.indexOf('const histQ = useQuery'), source.indexOf('function StateDot'))
-  const gate = hook.indexOf("if (d && d.state !== 'OPEN') continue")
-  const link = hook.indexOf("source: 'transcript'")
-  assert.ok(gate >= 0 && gate < link, 'state gate must run before linking')
+  assert.ok(hook.includes('resolveTranscriptPr(r?.messages'), 'histQ delegates the scan to the tested helper')
 })
 
 test('Session queries re-poll so opened/merged PRs surface without refocus', () => {

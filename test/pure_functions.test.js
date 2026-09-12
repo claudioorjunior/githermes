@@ -15,6 +15,7 @@ import {
   assembleTimeline,
   parseRemote,
   extractPrRef,
+  resolveTranscriptPr,
   formatPrCheckoutCmd,
   commentToChatText,
   ago,
@@ -111,6 +112,32 @@ test('extractPrRef extracts repo and PR number from PR URLs', () => {
   )
   assert.equal(extractPrRef('not a url'), null)
   assert.equal(extractPrRef(''), null)
+})
+
+test('resolveTranscriptPr links the newest open ref and skips merged ones', async () => {
+  const fetchPr = async hit => hit.number === 70
+    ? { number: 70, state: 'MERGED' }
+    : { number: 65, state: 'OPEN', title: 'live one' }
+  const msgs = [
+    { text: 'see https://github.com/owner/repo/pull/65' },
+    { text: 'see https://github.com/owner/repo/pull/70' },
+  ]
+  const pr = await resolveTranscriptPr(msgs, fetchPr)
+  assert.equal(pr.number, 65)
+  assert.equal(pr.source, 'transcript')
+})
+
+test('resolveTranscriptPr returns null when every ref resolves non-open', async () => {
+  const fetchPr = async () => ({ number: 1, state: 'CLOSED' })
+  assert.equal(await resolveTranscriptPr([{ text: 'https://github.com/owner/repo/pull/1' }], fetchPr), null)
+  assert.equal(await resolveTranscriptPr([], fetchPr), null)
+})
+
+test('resolveTranscriptPr keeps the link when the lookup fails', async () => {
+  const fetchPr = async () => { throw new Error('offline') }
+  const pr = await resolveTranscriptPr([{ text: 'https://github.com/owner/repo/pull/9' }], fetchPr)
+  assert.equal(pr.number, 9)
+  assert.equal(pr.state, 'OPEN')
 })
 
 test('Issue #33: formatPrCheckoutCmd returns a runnable gh command', () => {
