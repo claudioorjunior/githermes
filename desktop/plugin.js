@@ -2562,7 +2562,7 @@ function AssignToBot({ kind, repo, number }) {
 function DetailToolbar({ repo, number, url, title, kind, checkoutCommand, onBack, backLabel }) {
   const [owner, name] = String(repo || '').split('/')
   const ask = kind === 'pr'
-    ? jsx(AskHermesButton, { action: 'pr', repo, number, label: 'Ask Hermes about PR' })
+    ? jsx(AskHermesButton, { action: 'pr', repo, number, label: 'Ask Hermes' })
     : kind === 'issue'
       ? jsx(AskHermesButton, { action: 'issue', repo, number, label: 'Plan fix for this issue' })
       : null
