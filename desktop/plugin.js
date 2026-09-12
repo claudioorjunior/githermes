@@ -1012,6 +1012,7 @@ function useSessionPr(cwd, sessionId) {
         const hit = extractPrRef(msgs[i]?.text)
         if (!hit) continue
         const d = await shJson(`${GH} pr view ${sq(String(hit.number))} --repo ${sq(hit.repo)} --json number,title,state,isDraft,url,headRefName,baseRefName`).catch(() => null)
+        if (d && d.state !== 'OPEN') continue
         if (d) return { ...d, repo: hit.repo, source: 'transcript' }
         return { number: hit.number, repo: hit.repo, title: `#${hit.number}`, state: 'OPEN', url: `https://github.com/${hit.repo}/pull/${hit.number}`, source: 'transcript' }
       }

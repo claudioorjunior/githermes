@@ -185,3 +185,10 @@ test('Session PR lives in the status bar and hides without a linked PR', () => {
   assert.ok(source.includes("area: STATUSBAR_AREAS.right"), 'right bar, next to agents/context')
   assert.ok(!source.includes('titlebar-session-pr'), 'titlebar chip is gone')
 })
+
+test('Merged transcript PRs unlink: session falls back until the next PR', () => {
+  const hook = source.slice(source.indexOf('const histQ = useQuery'), source.indexOf('function StateDot'))
+  const gate = hook.indexOf("if (d && d.state !== 'OPEN') continue")
+  const link = hook.indexOf("source: 'transcript'")
+  assert.ok(gate >= 0 && gate < link, 'state gate must run before linking')
+})
