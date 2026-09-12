@@ -976,6 +976,7 @@ function useSessionGit(cwd) {
   return useQuery({
     queryKey: [ID, 'session-git', cwd],
     enabled: !!cwd,
+    refetchInterval: MEDIUM_POLL_MS,
     queryFn: async () => {
       const branch = await sh(`git -C ${sq(cwd)} rev-parse --abbrev-ref HEAD`).catch(() => '')
       const remote = await sh(`git -C ${sq(cwd)} config --get remote.origin.url`).catch(() => '')
@@ -995,6 +996,7 @@ function useSessionPr(cwd, sessionId) {
   const branchQ = useQuery({
     queryKey: [ID, 'session-pr', repo, branch],
     enabled: !!repo && !!branch && !isTrunk,
+    refetchInterval: MEDIUM_POLL_MS,
     queryFn: async () => {
       const list = await shJson(`${GH} pr list --repo ${sq(repo)} --head ${sq(branch)} --limit 5 --json number,title,state,isDraft,url,headRefName,baseRefName`)
       return Array.isArray(list) && list.length ? { ...list[0], repo, source: 'branch' } : null
@@ -1005,6 +1007,7 @@ function useSessionPr(cwd, sessionId) {
   const histQ = useQuery({
     queryKey: [ID, 'session-pr-hist', sessionId],
     enabled: !!sessionId && !branchQ.data && !branchQ.isFetching,
+    refetchInterval: MEDIUM_POLL_MS,
     queryFn: async () => {
       const r = await host.request('session.history', { session_id: sessionId }).catch(() => null)
       const msgs = r?.messages || []

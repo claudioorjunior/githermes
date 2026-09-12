@@ -192,3 +192,8 @@ test('Merged transcript PRs unlink: session falls back until the next PR', () =>
   const link = hook.indexOf("source: 'transcript'")
   assert.ok(gate >= 0 && gate < link, 'state gate must run before linking')
 })
+
+test('Session queries re-poll so opened/merged PRs surface without refocus', () => {
+  const hook = source.slice(source.indexOf('function useSessionGit'), source.indexOf('function StateDot'))
+  assert.equal((hook.match(/refetchInterval: MEDIUM_POLL_MS/g) || []).length, 3)
+})
