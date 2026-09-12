@@ -2315,6 +2315,23 @@ function ListEmptyState({ kind, state, repo, query }) {
   ] })
 }
 
+// Shared list footer: retry row when a refresh failed over loaded rows,
+// Show more while the server window looks full, null at the end.
+function ListMoreFooter({ q, limit, setLimit, allItems }) {
+  if (q.isError) return jsxs('div', { className: 'flex items-center gap-2 px-3 py-2 text-xs text-(--ui-text-tertiary)', children: [
+    jsx('span', { className: 'min-w-0 flex-1 truncate', children: `Could not refresh — showing latest ${allItems.length}.` }),
+    jsx(Button, { variant: 'ghost', size: 'sm', className: 'h-6 shrink-0 px-2 text-[11px]', onClick: () => q.refetch(), children: 'Retry' }),
+  ] })
+  if (allItems.length < limit || limit >= LIST_LIMIT_CAP) return null
+  return jsx(Button, {
+    variant: 'ghost',
+    size: 'sm',
+    className: 'w-full',
+    onClick: () => setLimit(l => Math.min(l * 2, LIST_LIMIT_CAP)),
+    children: 'Show more',
+  })
+}
+
 function PrList({ repo, onOpen, query, active = true }) {
   const state = useValue($prState)
   const [limit, setLimit] = useState(30)
@@ -2344,8 +2361,12 @@ function PrList({ repo, onOpen, query, active = true }) {
   if (q.isError && !allItems.length) return jsx(ListErrorState, { title: 'Could not load pull requests', error: q.error, onRetry: () => q.refetch() })
   const source = lookup.data && lookupMatchesState(lookup.data, state, true) ? [lookup.data] : allItems
   const items = source.filter(item => matchesListQuery(item, query))
-  const mayHaveMore = allItems.length >= limit && limit < LIST_LIMIT_CAP
-  if (!items.length) return jsx(ListEmptyState, { kind: 'prs', state, repo, query: allItems.length ? query : '' })
+  if (!items.length) {
+    const foot = ListMoreFooter({ q, limit, setLimit, allItems })
+    return foot
+      ? jsxs('div', { className: 'gh-list', children: [jsx(ListEmptyState, { kind: 'prs', state, repo, query: allItems.length ? query : '' }), foot] })
+      : jsx(ListEmptyState, { kind: 'prs', state, repo, query: allItems.length ? query : '' })
+  }
   return jsx(ScrollArea, {
     className: 'h-full',
     children: jsx('div', {
@@ -2382,20 +2403,7 @@ function PrList({ repo, onOpen, query, active = true }) {
           ],
         }, String(pr.number))
       ),
-        q.isError
-          ? jsxs('div', { className: 'flex items-center gap-2 px-3 py-2 text-xs text-(--ui-text-tertiary)', children: [
-            jsx('span', { className: 'min-w-0 flex-1 truncate', children: `Could not refresh — showing latest ${allItems.length}.` }),
-            jsx(Button, { variant: 'ghost', size: 'sm', className: 'h-6 shrink-0 px-2 text-[11px]', onClick: () => q.refetch(), children: 'Retry' }),
-          ] })
-          : mayHaveMore
-            ? jsx(Button, {
-              variant: 'ghost',
-              size: 'sm',
-              className: 'w-full',
-              onClick: () => setLimit(l => Math.min(l * 2, LIST_LIMIT_CAP)),
-              children: 'Show more',
-            })
-            : null,
+        ListMoreFooter({ q, limit, setLimit, allItems }),
       ],
     }),
   })
@@ -2429,8 +2437,12 @@ function IssueList({ repo, onOpen, query, active = true }) {
   if (q.isError && !allItems.length) return jsx(ListErrorState, { title: 'Could not load issues', error: q.error, onRetry: () => q.refetch() })
   const source = lookup.data && lookupMatchesState(lookup.data, state, false) ? [lookup.data] : allItems
   const items = source.filter(item => matchesListQuery(item, query))
-  const mayHaveMore = allItems.length >= limit && limit < LIST_LIMIT_CAP
-  if (!items.length) return jsx(ListEmptyState, { kind: 'issues', state, repo, query: allItems.length ? query : '' })
+  if (!items.length) {
+    const foot = ListMoreFooter({ q, limit, setLimit, allItems })
+    return foot
+      ? jsxs('div', { className: 'gh-list', children: [jsx(ListEmptyState, { kind: 'issues', state, repo, query: allItems.length ? query : '' }), foot] })
+      : jsx(ListEmptyState, { kind: 'issues', state, repo, query: allItems.length ? query : '' })
+  }
   return jsx(ScrollArea, {
     className: 'h-full',
     children: jsx('div', {
@@ -2465,20 +2477,7 @@ function IssueList({ repo, onOpen, query, active = true }) {
           ],
         }, String(it.number))
       ),
-        q.isError
-          ? jsxs('div', { className: 'flex items-center gap-2 px-3 py-2 text-xs text-(--ui-text-tertiary)', children: [
-            jsx('span', { className: 'min-w-0 flex-1 truncate', children: `Could not refresh — showing latest ${allItems.length}.` }),
-            jsx(Button, { variant: 'ghost', size: 'sm', className: 'h-6 shrink-0 px-2 text-[11px]', onClick: () => q.refetch(), children: 'Retry' }),
-          ] })
-          : mayHaveMore
-            ? jsx(Button, {
-              variant: 'ghost',
-              size: 'sm',
-              className: 'w-full',
-              onClick: () => setLimit(l => Math.min(l * 2, LIST_LIMIT_CAP)),
-              children: 'Show more',
-            })
-            : null,
+        ListMoreFooter({ q, limit, setLimit, allItems }),
       ],
     }),
   })
