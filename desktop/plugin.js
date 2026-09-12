@@ -1145,10 +1145,10 @@ function SessionBranchStatus() {
   const branch = gitQ.data?.branch
   const repo = gitQ.data?.repo
 
-  if (!cwd || !branch) return null
+  if (!cwd || !branch || !repo) return null
 
   const openRepo = () => {
-    if (repo) $repo.set(repo)
+    $repo.set(repo)
     openGithubPane()
   }
 
@@ -1161,7 +1161,7 @@ function SessionBranchStatus() {
       className: 'inline-flex h-full min-w-0 max-w-[180px] items-center gap-1 px-1.5 text-[0.6875rem] text-(--ui-text-tertiary) hover:text-(--ui-text-primary)',
       children: [
         jsx(Codicon, { name: 'git-branch', size: 12, className: 'text-(--ui-green)' }),
-        jsx('span', { className: 'truncate tabular-nums', children: branch }),
+        jsx('span', { className: 'truncate tabular-nums', children: `${repo} · ${branch}` }),
       ],
     }),
   })
