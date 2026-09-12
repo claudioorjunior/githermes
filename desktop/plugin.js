@@ -244,6 +244,24 @@ export function extractPrRef(text) {
   return { repo: `${m[1]}/${m[2].replace(/\.git$/i, '')}`, number: Number(m[3]) }
 }
 
+// Newest-first scan of session messages for a linkable PR. Skips refs whose
+// lookup resolves non-open (merged/closed unlinks); unresolvable refs keep
+// the link because a failed lookup is not a merge. fetchPr is injected so
+// tests cover the behavior without gh.
+export async function resolveTranscriptPr(messages, fetchPr) {
+  const msgs = Array.isArray(messages) ? messages : []
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const hit = extractPrRef(msgs[i]?.text)
+    if (!hit) continue
+    const d = await fetchPr(hit).catch(() => null)
+    if (d && d.state !== 'OPEN') continue
+    if (d) return { ...d, repo: hit.repo, source: 'transcript' }
+    // Unresolvable refs keep the link: a failed lookup is not a merge.
+    return { number: hit.number, repo: hit.repo, title: `#${hit.number}`, state: 'OPEN', url: `https://github.com/${hit.repo}/pull/${hit.number}`, source: 'transcript' }
+  }
+  return null
+}
+
 export function formatPrCheckoutCmd(repo, number) {
   return `gh pr checkout ${number} --repo ${repo}`
 }
@@ -976,6 +994,7 @@ function useSessionGit(cwd) {
   return useQuery({
     queryKey: [ID, 'session-git', cwd],
     enabled: !!cwd,
+    refetchInterval: MEDIUM_POLL_MS,
     queryFn: async () => {
       const branch = await sh(`git -C ${sq(cwd)} rev-parse --abbrev-ref HEAD`).catch(() => '')
       const remote = await sh(`git -C ${sq(cwd)} config --get remote.origin.url`).catch(() => '')
@@ -995,6 +1014,7 @@ function useSessionPr(cwd, sessionId) {
   const branchQ = useQuery({
     queryKey: [ID, 'session-pr', repo, branch],
     enabled: !!repo && !!branch && !isTrunk,
+    refetchInterval: MEDIUM_POLL_MS,
     queryFn: async () => {
       const list = await shJson(`${GH} pr list --repo ${sq(repo)} --head ${sq(branch)} --limit 5 --json number,title,state,isDraft,url,headRefName,baseRefName`)
       return Array.isArray(list) && list.length ? { ...list[0], repo, source: 'branch' } : null
@@ -1005,17 +1025,11 @@ function useSessionPr(cwd, sessionId) {
   const histQ = useQuery({
     queryKey: [ID, 'session-pr-hist', sessionId],
     enabled: !!sessionId && !branchQ.data && !branchQ.isFetching,
+    refetchInterval: MEDIUM_POLL_MS,
     queryFn: async () => {
       const r = await host.request('session.history', { session_id: sessionId }).catch(() => null)
-      const msgs = r?.messages || []
-      for (let i = msgs.length - 1; i >= 0; i--) {
-        const hit = extractPrRef(msgs[i]?.text)
-        if (!hit) continue
-        const d = await shJson(`${GH} pr view ${sq(String(hit.number))} --repo ${sq(hit.repo)} --json number,title,state,isDraft,url,headRefName,baseRefName`).catch(() => null)
-        if (d) return { ...d, repo: hit.repo, source: 'transcript' }
-        return { number: hit.number, repo: hit.repo, title: `#${hit.number}`, state: 'OPEN', url: `https://github.com/${hit.repo}/pull/${hit.number}`, source: 'transcript' }
-      }
-      return null
+      return resolveTranscriptPr(r?.messages, hit =>
+        shJson(`${GH} pr view ${sq(String(hit.number))} --repo ${sq(hit.repo)} --json number,title,state,isDraft,url,headRefName,baseRefName`))
     },
     staleTime: 30_000,
   })

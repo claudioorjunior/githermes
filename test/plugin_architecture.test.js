@@ -185,3 +185,13 @@ test('Session PR lives in the status bar and hides without a linked PR', () => {
   assert.ok(source.includes("area: STATUSBAR_AREAS.right"), 'right bar, next to agents/context')
   assert.ok(!source.includes('titlebar-session-pr'), 'titlebar chip is gone')
 })
+
+test('Merged transcript PRs unlink: session falls back until the next PR', () => {
+  const hook = source.slice(source.indexOf('const histQ = useQuery'), source.indexOf('function StateDot'))
+  assert.ok(hook.includes('resolveTranscriptPr(r?.messages'), 'histQ delegates the scan to the tested helper')
+})
+
+test('Session queries re-poll so opened/merged PRs surface without refocus', () => {
+  const hook = source.slice(source.indexOf('function useSessionGit'), source.indexOf('function StateDot'))
+  assert.equal((hook.match(/refetchInterval: MEDIUM_POLL_MS/g) || []).length, 3)
+})
