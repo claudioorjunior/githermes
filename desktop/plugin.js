@@ -1153,7 +1153,7 @@ function SessionBranchStatus() {
   }
 
   return jsx(Tip, {
-    label: repo ? `${repo} · ${branch}` : branch,
+    label: `${repo} · ${branch}`,
     children: jsxs('button', {
       type: 'button',
       onClick: openRepo,
