@@ -713,6 +713,23 @@ export function issuePlan(repo, number, state) {
   }
 }
 
+// Issue #57: classify `gh` CLI failures at the shell boundary so error states
+// render targeted recovery instead of raw stderr. Order matters: specific
+// phrases first, generic last. Recovery commands are copy-only, never executed.
+export function classifyGhError(e) {
+  const raw = String((e && e.message) || e || '')
+  if (/gh: command not found|command not found: gh|No such file or directory/i.test(raw) && /gh/.test(raw))
+    return { kind: 'missing', title: 'GitHub CLI not found', detail: 'Install the GitHub CLI (gh) and make sure it is on your PATH, then retry.' }
+  if (/not logged into any|gh auth login|authentication required|could not resolve to .* with the token|Bad credentials|HTTP 401/i.test(raw))
+    return { kind: 'auth', title: 'GitHub authentication needed', detail: 'Run gh auth login in your terminal to reconnect, then retry.', command: 'gh auth login' }
+  if (/rate limit|API rate limit|HTTP 403.*rate|exceeded.*quota/i.test(raw))
+    return { kind: 'rate', title: 'GitHub rate limit reached', detail: 'Wait a few minutes for the quota to reset, then retry.' }
+  if (/Could not resolve host|Failed to connect|Connection refused|Network is unreachable|HTTP 5\d\d|timeout|timed out|ECONNREFUSED|ENOTFOUND|EAI_AGAIN/i.test(raw))
+    return { kind: 'network', title: 'Network error', detail: 'Check your connection and retry. Large views may need a second attempt.' }
+  const scrubbed = raw.replace(/(gh[op]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|xox[bap]-\S+|-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]*?-----END [A-Z ]+PRIVATE KEY-----)/g, '[redacted]')
+  return { kind: 'unknown', detail: scrubbed.slice(0, 300) || 'Something went wrong.' }
+}
+
 // `gh pr checks` exits 1 with "no checks reported on the '<branch>' branch" when a
 // PR has no CI (#23) — normal state, not an error. Anchored to the documented
 // phrase so unrelated stderr containing "no checks" (e.g. an outage message)
@@ -2236,11 +2253,23 @@ function ListSkeleton() {
 }
 
 function ListErrorState({ title, error, onRetry }) {
-  return jsx('div', { className: 'p-6', children: jsx(ErrorState, {
-    title,
-    description: String(error?.message || error),
-    children: jsx(Button, { variant: 'outline', size: 'sm', onClick: onRetry, children: 'Retry' }),
-  }) })
+  return jsx('div', { className: 'p-6', children: jsx(GhErrorState, { title, error, onRetry }) })
+}
+
+// Issue #57: one classified error renderer for every gh failure surface.
+// Known kinds get the recovery title/detail; unknown falls back to scrubbed
+// stderr under the caller's title. Commands are copy-only, never run.
+function GhErrorState({ title, error, onRetry }) {
+  const c = classifyGhError(error)
+  const resolved = c.kind === 'unknown' ? title : c.title
+  return jsx(ErrorState, {
+    title: resolved,
+    description: c.detail,
+    children: jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [
+      c.command ? jsx(CopyButton, { appearance: 'inline', className: 'font-mono text-[11px]', label: `Copy ${c.command}`, text: c.command, children: c.command }) : null,
+      onRetry ? jsx(Button, { variant: 'outline', size: 'sm', onClick: onRetry, children: 'Retry' }) : null,
+    ] }),
+  })
 }
 
 function ListEmptyState({ kind, state, repo, query }) {
@@ -2582,7 +2611,7 @@ function DetailLoading({ repo, number, onBack, backLabel }) {
 function DetailError({ repo, number, title, error, onBack, backLabel }) {
   return jsxs('div', { className: 'flex h-full flex-col', children: [
     jsx(DetailToolbar, { repo, number, onBack, backLabel }),
-    jsx('div', { className: 'p-6', children: jsx(ErrorState, { title, description: String(error?.message || error) }) }),
+    jsx('div', { className: 'p-6', children: jsx(GhErrorState, { title, error }) }),
   ] })
 }
 
@@ -3073,11 +3102,7 @@ function GitHubPane() {
   if (showIssue) return jsx(IssueDetail, { repo, number: selIssue, active: paneVisible, onBack: () => $selIssue.set(null) })
 
   if (reposQ.isError) {
-    return jsx('div', { className: 'p-6', children: jsx(ErrorState, {
-      title: 'Could not load repositories',
-      description: String(reposQ.error?.message || reposQ.error),
-      children: jsx(Button, { variant: 'outline', size: 'sm', onClick: () => reposQ.refetch(), children: 'Retry' }),
-    }) })
+    return jsx('div', { className: 'p-6', children: jsx(GhErrorState, { title: 'Could not load repositories', error: reposQ.error, onRetry: () => reposQ.refetch() }) })
   }
 
   return jsxs('div', {
@@ -3141,11 +3166,7 @@ function GithubPage() {
   if (showIssue) return jsx(IssueDetail, { repo, number: selIssue, onBack: () => $selIssue.set(null) })
 
   if (reposQ.isError) {
-    return jsx('div', { className: 'mx-auto w-full max-w-[1020px] p-6', children: jsx(ErrorState, {
-      title: 'Could not load repositories',
-      description: String(reposQ.error?.message || reposQ.error),
-      children: jsx(Button, { variant: 'outline', size: 'sm', onClick: () => reposQ.refetch(), children: 'Retry' }),
-    }) })
+    return jsx('div', { className: 'mx-auto w-full max-w-[1020px] p-6', children: jsx(GhErrorState, { title: 'Could not load repositories', error: reposQ.error, onRetry: () => reposQ.refetch() }) })
   }
 
   return jsxs('div', {

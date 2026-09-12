@@ -46,6 +46,7 @@ import {
   updateBotAssignment,
   formatAskHermesPrompt,
   mergeRepoOptions,
+  classifyGhError,
 } from '../desktop/plugin.js'
 
 test('Issue #13: labelTextColor chooses high-contrast text color based on luminance', () => {
@@ -769,6 +770,31 @@ test('mergeRepoOptions pins session/saved repos and dedupes case-insensitively',
   assert.deepEqual(mergeRepoOptions({ discovered: null, pinned: ['ok/repo'] }), ['ok/repo'])
   assert.deepEqual(mergeRepoOptions({}), [])
   assert.deepEqual(mergeRepoOptions({ discovered: ['nope', 'a/b'], pinned: ['a/b'] }), ['a/b'])
+})
+
+// Issue #57: one table covers gh failure classification.
+test('classifyGhError maps known CLI failures to recovery kinds', () => {
+  const cases = [
+    ['sh: gh: command not found', 'missing', undefined],
+    ['zsh: command not found: gh', 'missing', undefined],
+    ['You are not logged into any GitHub hosts. To log in, run: gh auth login', 'auth', 'gh auth login'],
+    ['gh: Bad credentials (HTTP 401)', 'auth', 'gh auth login'],
+    ['HTTP 403: API rate limit exceeded for user ID 1', 'rate', undefined],
+    ['failed to run external command: Could not resolve host: api.github.com', 'network', undefined],
+    ['Post "https://api.github.com/graphql": dial tcp: connection refused', 'network', undefined],
+    [new Error('exit 1'), 'unknown', undefined],
+    [null, 'unknown', undefined],
+  ]
+  for (const [input, kind, command] of cases) {
+    const got = classifyGhError(input)
+    assert.equal(got.kind, kind, `kind for ${JSON.stringify(String(input)?.slice(0, 60))}`)
+    assert.equal(got.command, command, `command for ${kind}`)
+    assert.ok(got.detail && got.detail.length, `detail for ${kind}`)
+  }
+  // Secrets never leak through the unknown fallback.
+  const scrubbed = classifyGhError('token gho_abc123 leaked and github_pat_xyz789')
+  assert.ok(!scrubbed.detail.includes('gho_abc123') && !scrubbed.detail.includes('github_pat_xyz789'))
+  assert.ok(scrubbed.detail.includes('[redacted]'))
 })
 
 const RESERVED_LOOKALIKES = ['Bot Chat', 'Agent Inbox']
