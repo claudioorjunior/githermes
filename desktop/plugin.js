@@ -59,6 +59,9 @@ const MEDIUM_POLL_MS = 30_000
 const HEADER_POLL_MS = 60_000
 const SLOW_POLL_MS = 120_000
 const COMMENT_MAX = 65_536
+// Lists grow by doubling --limit (gh list has no cursor); cap the ceiling so
+// busy repos can't blow the chunked shell payload.
+const LIST_LIMIT_CAP = 120
 
 let pluginCtx = null
 const $alwaysVisible = atom(true)
@@ -2314,12 +2317,13 @@ function ListEmptyState({ kind, state, repo, query }) {
 
 function PrList({ repo, onOpen, query, active = true }) {
   const state = useValue($prState)
+  const [limit, setLimit] = useState(30)
   const q = useQuery({
-    queryKey: [ID, 'prs', repo, state],
+    queryKey: [ID, 'prs', repo, state, limit],
     enabled: !!repo && active,
     // Issue #10: expanded list metadata can overflow the stdout cap, so the
     // list routes through shBig.
-    queryFn: () => shJsonBig(`${GH} pr list --repo ${sq(repo)} --state ${sq(state)} --limit 30 --json number,title,state,author,updatedAt,url,baseRefName,headRefName,isDraft,additions,deletions,changedFiles,reviewDecision,statusCheckRollup,labels`),
+    queryFn: () => shJsonBig(`${GH} pr list --repo ${sq(repo)} --state ${sq(state)} --limit ${limit} --json number,title,state,author,updatedAt,url,baseRefName,headRefName,isDraft,additions,deletions,changedFiles,reviewDecision,statusCheckRollup,labels`),
     staleTime: 15_000,
     refetchInterval: MEDIUM_POLL_MS,
     refetchOnWindowFocus: true,
@@ -2337,9 +2341,10 @@ function PrList({ repo, onOpen, query, active = true }) {
   })
   if (!repo) return jsx(EmptyState, { title: 'Select a repository', description: 'Pick one above to list PRs.' })
   if (q.isLoading) return jsx(ListSkeleton, {})
-  if (q.isError) return jsx(ListErrorState, { title: 'Could not load pull requests', error: q.error, onRetry: () => q.refetch() })
+  if (q.isError && !allItems.length) return jsx(ListErrorState, { title: 'Could not load pull requests', error: q.error, onRetry: () => q.refetch() })
   const source = lookup.data && lookupMatchesState(lookup.data, state, true) ? [lookup.data] : allItems
   const items = source.filter(item => matchesListQuery(item, query))
+  const mayHaveMore = allItems.length >= limit && limit < LIST_LIMIT_CAP
   if (!items.length) return jsx(ListEmptyState, { kind: 'prs', state, repo, query: allItems.length ? query : '' })
   return jsx(ScrollArea, {
     className: 'h-full',
@@ -2349,6 +2354,7 @@ function PrList({ repo, onOpen, query, active = true }) {
         jsxs('div', { className: 'gh-list-heading flex items-center gap-1.5 px-1 py-0.5 text-[10px] font-semibold', children: [
           jsx(Codicon, { name: 'git-pull-request' }),
           jsx('span', { children: 'Pull requests' }),
+          jsx('span', { className: 'font-normal text-(--ui-text-quaternary)', children: `Showing latest ${allItems.length}` }),
           jsx(Badge, { variant: 'secondary', className: 'ml-auto h-5 min-w-5 justify-center text-[10px]', children: String(items.length) }),
         ] }),
         ...items.map(pr =>
@@ -2375,18 +2381,34 @@ function PrList({ repo, onOpen, query, active = true }) {
             jsx(Codicon, { name: 'chevron-right', className: 'gh-card-arrow mt-1 shrink-0', 'aria-hidden': true }),
           ],
         }, String(pr.number))
-      )],
+      ),
+        q.isError
+          ? jsxs('div', { className: 'flex items-center gap-2 px-3 py-2 text-xs text-(--ui-text-tertiary)', children: [
+            jsx('span', { className: 'min-w-0 flex-1 truncate', children: `Could not refresh — showing latest ${allItems.length}.` }),
+            jsx(Button, { variant: 'ghost', size: 'sm', className: 'h-6 shrink-0 px-2 text-[11px]', onClick: () => q.refetch(), children: 'Retry' }),
+          ] })
+          : mayHaveMore
+            ? jsx(Button, {
+              variant: 'ghost',
+              size: 'sm',
+              className: 'w-full',
+              onClick: () => setLimit(l => Math.min(l * 2, LIST_LIMIT_CAP)),
+              children: 'Show more',
+            })
+            : null,
+      ],
     }),
   })
 }
 
 function IssueList({ repo, onOpen, query, active = true }) {
   const state = useValue($issueState)
+  const [limit, setLimit] = useState(30)
   const q = useQuery({
-    queryKey: [ID, 'issues', repo, state],
+    queryKey: [ID, 'issues', repo, state, limit],
     enabled: !!repo && active,
     // Issue #10: same stdout-cap routing as the PR list (busy repos overflow).
-    queryFn: () => shJsonBig(`${GH} issue list --repo ${sq(repo)} --state ${sq(state)} --limit 30 --json number,title,state,author,updatedAt,url,labels`),
+    queryFn: () => shJsonBig(`${GH} issue list --repo ${sq(repo)} --state ${sq(state)} --limit ${limit} --json number,title,state,author,updatedAt,url,labels`),
     staleTime: 15_000,
     refetchInterval: MEDIUM_POLL_MS,
     refetchOnWindowFocus: true,
@@ -2404,9 +2426,10 @@ function IssueList({ repo, onOpen, query, active = true }) {
   })
   if (!repo) return jsx(EmptyState, { title: 'Select a repository', description: 'Pick one above to list issues.' })
   if (q.isLoading) return jsx(ListSkeleton, {})
-  if (q.isError) return jsx(ListErrorState, { title: 'Could not load issues', error: q.error, onRetry: () => q.refetch() })
+  if (q.isError && !allItems.length) return jsx(ListErrorState, { title: 'Could not load issues', error: q.error, onRetry: () => q.refetch() })
   const source = lookup.data && lookupMatchesState(lookup.data, state, false) ? [lookup.data] : allItems
   const items = source.filter(item => matchesListQuery(item, query))
+  const mayHaveMore = allItems.length >= limit && limit < LIST_LIMIT_CAP
   if (!items.length) return jsx(ListEmptyState, { kind: 'issues', state, repo, query: allItems.length ? query : '' })
   return jsx(ScrollArea, {
     className: 'h-full',
@@ -2416,6 +2439,7 @@ function IssueList({ repo, onOpen, query, active = true }) {
         jsxs('div', { className: 'gh-list-heading flex items-center gap-1.5 px-1 py-0.5 text-[10px] font-semibold', children: [
           jsx(Codicon, { name: 'issues' }),
           jsx('span', { children: 'Issues' }),
+          jsx('span', { className: 'font-normal text-(--ui-text-quaternary)', children: `Showing latest ${allItems.length}` }),
           jsx(Badge, { variant: 'secondary', className: 'ml-auto h-5 min-w-5 justify-center text-[10px]', children: String(items.length) }),
         ] }),
         ...items.map(it =>
@@ -2440,7 +2464,22 @@ function IssueList({ repo, onOpen, query, active = true }) {
             jsx(Codicon, { name: 'chevron-right', className: 'gh-card-arrow mt-1 shrink-0', 'aria-hidden': true }),
           ],
         }, String(it.number))
-      )],
+      ),
+        q.isError
+          ? jsxs('div', { className: 'flex items-center gap-2 px-3 py-2 text-xs text-(--ui-text-tertiary)', children: [
+            jsx('span', { className: 'min-w-0 flex-1 truncate', children: `Could not refresh — showing latest ${allItems.length}.` }),
+            jsx(Button, { variant: 'ghost', size: 'sm', className: 'h-6 shrink-0 px-2 text-[11px]', onClick: () => q.refetch(), children: 'Retry' }),
+          ] })
+          : mayHaveMore
+            ? jsx(Button, {
+              variant: 'ghost',
+              size: 'sm',
+              className: 'w-full',
+              onClick: () => setLimit(l => Math.min(l * 2, LIST_LIMIT_CAP)),
+              children: 'Show more',
+            })
+            : null,
+      ],
     }),
   })
 }

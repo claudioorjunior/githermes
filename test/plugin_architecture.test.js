@@ -178,7 +178,20 @@ test('Issue #64 review: a pending manual check cannot revert a newer repo', () =
   assert.ok(guard >= 0 && guard < apply, 'stale-completion guard must run before onChange')
 })
 
-test('Session PR lives in the status bar and hides without a linked PR', () => {
+test('Issue #55: lists cap explicitly and load more on demand', () => {
+  const prs = source.slice(source.indexOf('function PrList'), source.indexOf('function IssueList'))
+  const issues = source.slice(source.indexOf('function IssueList'), source.indexOf('function AssignToBot'))
+  for (const [name, list] of [['prs', prs], ['issues', issues]]) {
+    assert.ok(list.includes('const [limit, setLimit] = useState(30)'), `${name}: limit state missing`)
+    assert.ok(list.includes('--limit ${limit}'), `${name}: limit not wired into the query`)
+    assert.ok(list.includes('Showing latest'), `${name}: cap label missing`)
+    assert.ok(list.includes("children: 'Show more'"), `${name}: load-more button missing`)
+    assert.ok(list.includes('setLimit(l => Math.min(l * 2, LIST_LIMIT_CAP))'), `${name}: unbounded growth`)
+    assert.ok(list.includes('q.isError && !allItems.length'), `${name}: refetch failure must keep rows`)
+  }
+})
+
+test('Session branch lives in the status bar and hides without git state', () => {
   const status = source.slice(source.indexOf('function SessionPrStatus'), source.indexOf('function RepoLabel'))
   assert.ok(status.includes('if (!cwd || !pr) return null'), 'no footprint without a linked PR')
   assert.ok(status.includes('max-w-[220px]'), 'status-bar item needs a width ceiling')
