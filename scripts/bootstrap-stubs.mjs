@@ -55,6 +55,7 @@ export const relativeTime = () => ''
 export const PALETTE_AREA = 'palette'
 export const TITLEBAR_AREAS = 'titlebar'
 export const PANES_AREA = 'panes'
+export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right' }
 export const ROUTES_AREA = 'routes'
 export const SIDEBAR_NAV_AREA = 'sidebar.nav'
 export const Tip = () => null

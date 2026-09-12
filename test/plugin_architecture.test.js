@@ -177,3 +177,11 @@ test('Issue #64 review: a pending manual check cannot revert a newer repo', () =
   const apply = picker.indexOf('onChange(resolved)')
   assert.ok(guard >= 0 && guard < apply, 'stale-completion guard must run before onChange')
 })
+
+test('Session PR lives in the status bar and hides without a linked PR', () => {
+  const status = source.slice(source.indexOf('function SessionPrStatus'), source.indexOf('function RepoLabel'))
+  assert.ok(status.includes('if (!cwd || !pr) return null'), 'no footprint without a linked PR')
+  assert.ok(status.includes('max-w-[220px]'), 'status-bar item needs a width ceiling')
+  assert.ok(source.includes("area: STATUSBAR_AREAS.right"), 'right bar, next to agents/context')
+  assert.ok(!source.includes('titlebar-session-pr'), 'titlebar chip is gone')
+})

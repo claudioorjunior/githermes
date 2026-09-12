@@ -37,6 +37,7 @@ import {
   PALETTE_AREA,
   TITLEBAR_AREAS,
   PANES_AREA,
+  STATUSBAR_AREAS,
   Tip,
 } from '@hermes/plugin-sdk'
 import { useState, useEffect, useMemo, useRef } from 'react'
@@ -1086,52 +1087,37 @@ function TitlebarGithubButton() {
   })
 }
 
-function SessionPrChip() {
+// Session PR as a status-bar item (right, next to agents/context). Renders
+// ONLY while the active session links to a PR — null otherwise, so the bar
+// never pays footprint or reflow for sessions without one.
+function SessionPrStatus() {
   const cwd = useValue(host.state.cwd)
   const activeId = useValue(host.state.activeSessionId)
-  const { gitQ, pr, loading } = useSessionPr(cwd, activeId)
-  const branch = gitQ.data?.branch
-  const repo = gitQ.data?.repo
+  const { pr } = useSessionPr(cwd, activeId)
+
+  if (!cwd || !pr) return null
 
   const openLinked = () => {
-    if (pr?.repo) $repo.set(pr.repo)
-    if (pr?.number) {
-      $tab.set('prs')
-      $selPr.set(pr.number)
-      $selIssue.set(null)
-    }
+    if (pr.repo) $repo.set(pr.repo)
+    $tab.set('prs')
+    $selPr.set(pr.number)
+    $selIssue.set(null)
     openGithubPane()
   }
 
-  if (!cwd) return null
-  if (loading) return jsxs('span', { className: 'flex items-center gap-1.5 text-xs text-(--ui-text-quaternary)', children: [jsx(GlyphSpinner, { className: 'size-3' }), ' git…'] })
-  if (pr) {
-    return jsx(Tip, {
-      label: `${pr.repo} #${pr.number} · ${pr.source === 'transcript' ? 'from session' : pr.headRefName || branch}`,
-      children: jsxs('button', {
-        type: 'button',
-        onClick: openLinked,
-        className: 'flex items-center gap-1.5 rounded-full border border-(--ui-stroke-secondary) bg-(--ui-bg-quaternary) px-2.5 py-0.5 text-xs hover:bg-(--ui-bg-quinary) max-w-[280px]',
-        children: [
-          jsx(StateDot, { state: pr.state, isDraft: pr.isDraft }),
-          jsx('span', { className: 'truncate font-medium', children: `#${pr.number} ${pr.title || ''}` }),
-        ],
-      }),
-    })
-  }
-  if (branch && repo && TRUNK.has(branch.toLowerCase())) {
-    return jsx(Tip, { label: `${repo} · ${branch}`, children: jsx('span', { className: 'text-xs text-(--ui-text-quaternary) truncate', children: `${branch} · trunk` }) })
-  }
-  if (branch) {
-    return jsxs('span', {
-      className: 'flex items-center gap-1.5 text-xs text-(--ui-text-quaternary)',
+  return jsx(Tip, {
+    label: `${pr.repo} #${pr.number} · ${pr.source === 'transcript' ? 'from session' : pr.headRefName || ''}`,
+    children: jsxs('button', {
+      type: 'button',
+      onClick: openLinked,
+      'aria-label': `Open linked pull request #${pr.number}`,
+      className: 'inline-flex h-full min-w-0 max-w-[220px] items-center gap-1 px-1.5 text-[0.6875rem] text-(--ui-text-tertiary) hover:text-(--ui-text-primary)',
       children: [
-        jsx('span', { children: `${branch} · no PR` }),
-        jsx(Button, { variant: 'ghost', size: 'sm', className: 'h-5 px-1.5 text-[11px]', onClick: openGithubPane, children: 'Open' }),
+        jsx(StateDot, { state: pr.state, isDraft: pr.isDraft }),
+        jsx('span', { className: 'truncate font-medium tabular-nums', children: `#${pr.number} ${pr.title || ''}` }),
       ],
-    })
-  }
-  return null
+    }),
+  })
 }
 
 function RepoLabel({ repo, size = 20 }) {
@@ -3285,6 +3271,6 @@ export default {
       data: { id: 'githermes.open-page', label: 'GitHub: Open page', keywords: ['github', 'page', 'pr', 'issue'], run: openGithubPage },
     })
     ctx.register({ id: 'titlebar-github', area: TITLEBAR_AREAS.right, order: 20, render: () => jsx(TitlebarGithubButton, {}) })
-    ctx.register({ id: 'titlebar-session-pr', area: TITLEBAR_AREAS.center, order: 10, render: () => jsx(SessionPrChip, {}) })
+    ctx.register({ id: 'statusbar-session-pr', area: STATUSBAR_AREAS.right, order: 85, render: () => jsx(SessionPrStatus, {}) })
   },
 }
