@@ -48,6 +48,9 @@ export const SelectContent = () => null
 export const SelectItem = () => null
 export const SelectTrigger = () => null
 export const SelectValue = () => null
+export const Popover = () => null
+export const PopoverTrigger = () => null
+export const PopoverContent = () => null
 export const Codicon = () => null
 export const icons = {}
 export const cn = (...args) => args.filter(Boolean).join(' ')
