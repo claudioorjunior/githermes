@@ -111,7 +111,8 @@ const PANE_WRAP_CSS = `
   box-shadow: none;
 }
 /* Unscoped: the picker popover portals outside .githermes-pane, so the
-   gh- prefix alone namespaces these (hover + drop-target affordance). */
+   gh- prefix alone namespaces these (hover + drop-target affordance).
+   Globally visible by construction — keep the gh- prefix unique. */
 .gh-repo-option { cursor: pointer; }
 .gh-repo-option:hover { background: var(--ui-bg-quinary); }
 .gh-repo-grip { cursor: grab; opacity: 0.7; }
@@ -1267,7 +1268,9 @@ function RepoPicker({ repos, value, onChange }) {
     if (idx !== dragIdx) {
       const next = [...list]
       const [moved] = next.splice(dragIdx, 1)
-      next.splice(idx, 0, moved)
+      // The drop bar sits above row idx; removing a row above the target
+      // shifts it one left, so insert before the row the bar pointed at.
+      next.splice(dragIdx < idx ? idx - 1 : idx, 0, moved)
       commitOrder(next)
     }
     resetDrag()
@@ -1299,9 +1302,12 @@ function RepoPicker({ repos, value, onChange }) {
               // Native CSS scroll, not ScrollArea: inside the popover there is
               // no definite height, so the Radix viewport grows to content and
               // the clipped popover looks locked. overflow-y-auto just works.
-              children: jsxs('div', { className: 'max-h-72 overflow-y-auto', children: [
+              children: jsxs('div', { role: 'listbox', 'aria-label': 'Repositories', className: 'max-h-72 overflow-y-auto', children: [
                 ...list.map((r, i) => jsxs('div', {
                   draggable: true,
+                  role: 'option',
+                  tabIndex: 0,
+                  'aria-selected': value === r,
                   onDragStart: e => {
                     setDragIdx(i)
                     try { e.dataTransfer.setData('text/plain', String(r)); e.dataTransfer.effectAllowed = 'move' } catch {}
@@ -1310,6 +1316,7 @@ function RepoPicker({ repos, value, onChange }) {
                   onDrop: e => { e.preventDefault(); dropOn(i) },
                   onDragEnd: resetDrag,
                   onClick: () => { if (valueRef.current !== r) onChange(r); setManualOpen(false); setError(''); setOpen(false) },
+                  onKeyDown: e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (valueRef.current !== r) onChange(r); setManualOpen(false); setError(''); setOpen(false) } },
                   className: 'gh-repo-option flex items-center gap-2 rounded-md px-2 py-1.5 text-xs'
                     + (dragIdx === i ? ' opacity-40' : '')
                     + (overIdx === i && dragIdx != null && dragIdx !== i ? ' gh-repo-option-drop' : ''),
@@ -1323,7 +1330,10 @@ function RepoPicker({ repos, value, onChange }) {
                   ],
                 }, r)),
                 jsx('div', {
+                  role: 'option',
+                  tabIndex: 0,
                   onClick: () => { setManualOpen(true); setError(''); setOpen(false) },
+                  onKeyDown: e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setManualOpen(true); setError(''); setOpen(false) } },
                   className: 'gh-repo-option flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-(--ui-text-tertiary)',
                   children: [jsx(Codicon, { name: 'plus', size: 12, className: 'shrink-0' }), 'Use another repository…'],
                 }, OTHER),
@@ -3179,16 +3189,14 @@ function useGitHubShellState() {
   const savedRepo = pluginCtx?.storage.get('repo')
   const repoOrder = useValue(githubShellStore.repoOrder)
   // One-time hydration: pluginCtx/storage exist only after registration, so
-  // the saved drag order can't be read at store creation.
-  const hydratedOrder = useRef(false)
+  // the saved drag order can't be read at store creation. No-deps effect that
+  // retries until it sticks: if pluginCtx is not there yet, a later render
+  // tries again instead of losing the stored order forever.
   useEffect(() => {
-    if (hydratedOrder.current) return
-    hydratedOrder.current = true
-    if (!githubShellStore.repoOrder.get()) {
-      const stored = pluginCtx?.storage.get('repoOrder')
-      if (Array.isArray(stored) && stored.length) githubShellStore.repoOrder.set(stored)
-    }
-  }, [])
+    if (!pluginCtx || githubShellStore.repoOrder.get()) return
+    const stored = pluginCtx.storage.get('repoOrder')
+    if (Array.isArray(stored) && stored.length) githubShellStore.repoOrder.set(stored)
+  })
   const repoOptions = useMemo(
     () => mergeRepoOptions({
       discovered: reposQ.data || [],

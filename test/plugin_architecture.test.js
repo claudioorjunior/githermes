@@ -214,9 +214,15 @@ test('Repo picker rows drag to reorder and the order persists', () => {
   assert.ok(picker.includes("storage.set('repoOrder'"), 'drop must persist the order')
   assert.ok(picker.includes('jsxs(Popover'), 'picker must be a popover list (Select cannot host drag)')
   assert.ok(picker.includes("title: 'Drag to reorder'"), 'every row needs the movable affordance tooltip')
+  // Downward drops: the bar sits above row idx, removal shifts left first.
+  assert.ok(picker.includes('dragIdx < idx ? idx - 1 : idx'), 'downward drop must compensate the removal shift')
+  // Keyboard parity: rows are divs, so they must act like options.
+  assert.ok(picker.includes("role: 'option'") && picker.includes('tabIndex: 0'), 'rows must be focusable options')
+  assert.ok(picker.includes('onKeyDown'), 'rows need Enter/Space activation')
   // Shell feeds the saved order to the merge and hydrates it once.
   assert.ok(shell.includes('ordered: repoOrder || []'), 'shell must pass the saved order')
   assert.ok(shell.includes("storage.get('repoOrder')"), 'shell must hydrate the saved order')
+  assert.ok(shell.includes('if (!pluginCtx || githubShellStore.repoOrder.get()) return'), 'hydration must retry until pluginCtx exists')
   // Hot-reload backfill: the cached store predates newer atoms.
   assert.ok(store.includes('if (!store.repoOrder) store.repoOrder = atom(null)'), 'hot reload must backfill new atoms')
 })
