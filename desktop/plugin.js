@@ -2420,7 +2420,12 @@ function PrList({ repo, onOpen, query, active = true }) {
             jsxs('span', {
               className: 'min-w-0 flex-1',
               children: [
-                jsx('button', { type: 'button', className: 'gh-row-open block w-full text-left', children: jsx(ItemTitle, { title: pr.title, number: pr.number }) }),
+                jsxs('button', { type: 'button', className: 'gh-row-open flex w-full items-center gap-1.5 text-left', children: [
+                  // State indicator reuses the detail pill's table (icon + color +
+                  // tooltip label), so open/draft/merged/closed read at a glance.
+                  jsx(Codicon, { name: (STATE_PILL[prStateKey(pr)] || STATE_PILL.open).icon, size: 14, style: { color: (STATE_PILL[prStateKey(pr)] || STATE_PILL.open).bg }, title: (STATE_PILL[prStateKey(pr)] || STATE_PILL.open).label, className: 'shrink-0' }),
+                  jsx(ItemTitle, { title: pr.title, number: pr.number }),
+                ] }),
                 jsxs('span', { className: 'mt-1 flex flex-wrap items-center gap-x-1.5 text-[10px] text-(--ui-text-tertiary)', children: [
                   pr.author?.login ? jsx('button', { type: 'button', className: 'gh-filter-token', onClick: event => setListFilter(event, 'author', pr.author?.login), children: `@${pr.author.login}` }) : null,
                   ...(Array.isArray(pr.labels) ? pr.labels.map(l => jsx(LabelChip, { label: l, onClick: event => setListFilter(event, 'label', l.name) }, l.name || l.id)) : []),

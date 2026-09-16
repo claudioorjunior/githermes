@@ -196,6 +196,13 @@ test('Issue #55: lists cap explicitly and load more on demand', () => {
   }
 })
 
+test('PR list rows carry a state indicator open/draft/merged/closed', () => {
+  const prs = source.slice(source.indexOf('function PrList'), source.indexOf('function IssueList'))
+  assert.ok(prs.includes('STATE_PILL[prStateKey(pr)]'), 'list must reuse the detail pill state table')
+  assert.ok(prs.includes('title: (STATE_PILL[prStateKey(pr)] || STATE_PILL.open).label'), 'indicator needs a tooltip label')
+  assert.ok(prs.includes('style: { color:'), 'indicator colors come from the state table')
+})
+
 test('Session branch lives in the status bar and hides without git state', () => {
   const status = source.slice(source.indexOf('function SessionBranchStatus'), source.indexOf('function RepoLabel'))
   assert.ok(status.includes('if (!cwd || !branch || !repo) return null'), 'no footprint without git state, never a stale repo')
