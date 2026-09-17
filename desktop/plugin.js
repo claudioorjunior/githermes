@@ -1011,6 +1011,21 @@ const {
   selIssue: $selIssue,
 } = githubShellStore
 
+// Cross-repo "open session PR" navigation sets repo + selection together; the
+// repo-change reset below would otherwise clear the just-set selection after
+// the batched commit. The flag names the navigation target repo, armed only
+// when the repo actually changes. The effect matches instead of consuming: a
+// fresh mount never fires (so nothing goes stale), and pane+page each skip
+// the same commit independently. Any other repo change mismatches and clears.
+let suppressRepoResetFor = null
+function navigateToSessionPr(repo, number) {
+  if (repo && repo !== $repo.get()) suppressRepoResetFor = repo
+  if (repo) $repo.set(repo)
+  $tab.set('prs')
+  $selPr.set(number)
+  $selIssue.set(null)
+}
+
 function useRepos() {
   return useQuery({
     queryKey: [ID, 'repos'],
@@ -1152,10 +1167,7 @@ function SessionPrStatus() {
   if (!cwd || !pr) return null
 
   const openLinked = () => {
-    if (pr.repo) $repo.set(pr.repo)
-    $tab.set('prs')
-    $selPr.set(pr.number)
-    $selIssue.set(null)
+    navigateToSessionPr(pr.repo, pr.number)
     openGithubPane()
   }
 
@@ -3242,10 +3254,7 @@ function SessionPrBanner() {
   return jsxs('button', {
     type: 'button',
     onClick: () => {
-      $repo.set(pr.repo)
-      $tab.set('prs')
-      $selPr.set(pr.number)
-      $selIssue.set(null)
+      navigateToSessionPr(pr.repo, pr.number)
     },
     className: 'shrink-0 w-full text-left border-b border-(--ui-stroke-secondary) bg-(--ui-bg-quaternary) px-3 py-2 flex items-center gap-2 hover:bg-(--ui-bg-quinary)',
     children: [
@@ -3309,7 +3318,14 @@ function useGitHubShellState() {
   // mounting the page or pane must not drop the open detail or search.
   const prevRepo = useRef(repo)
   useEffect(() => {
-    if (prevRepo.current !== repo) { $selPr.set(null); $selIssue.set(null); $listQuery.set('') }
+    if (prevRepo.current !== repo) {
+      // A cross-repo session-PR navigation sets the selection together with
+      // the repo (navigateToSessionPr); keep that selection, clear anything
+      // else. The filter always resets: it is shared across repos, so repo
+      // A's query must never follow the user into repo B.
+      $listQuery.set('')
+      if (suppressRepoResetFor !== repo) { $selPr.set(null); $selIssue.set(null) }
+    }
     prevRepo.current = repo
   }, [repo])
 
