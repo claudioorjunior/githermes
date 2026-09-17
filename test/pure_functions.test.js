@@ -23,15 +23,18 @@ import {
   projectionBody,
   projectInlineComments,
   numericListQuery,
+  isLookupMiss,
   isLongBody,
   lookupMatchesState,
   repoOk,
   repoApiPath,
+  sq,
   isNoChecksError,
   livePollInterval,
   commentBodyOk,
   loginOf,
   projectIssueComments,
+  projectPaginatedItems,
   isMergeConflict,
   canApprove,
   issueAction,
@@ -340,8 +343,13 @@ test('projectionBody strips only the outer array brackets so projections run (re
   const inlineJq =
     '[.[]|{id,user:.user.login,body:(.body//""),path,line,original_line,in_reply_to_id,created_at,html_url,diff_hunk:(.diff_hunk//"")}]'
   const filesJq = '[.[]|{filename,status,additions,deletions,patch:(.patch//"")}]'
+  // Issue comments must stay recognizable without body_html (dropped: dead
+  // weight, never rendered) — html_url is the marker, diff_hunk still wins.
+  const issueCommentsJq = '[.[]|{user:.user.login,created_at,html_url,body:(.body//"")}]'
   assert.ok(projectionBody(inlineJq).includes('diff_hunk'))
   assert.ok(projectionBody(filesJq).includes('patch'))
+  assert.ok(projectionBody(issueCommentsJq).includes('html_url'))
+  assert.ok(!projectionBody(issueCommentsJq).includes('body_html'))
   assert.equal(projectionBody(null), '')
   // Non-array filters stay untouched (no projection recognized -> raw fallback).
   assert.equal(projectionBody('{number,title}'), '{number,title}')
@@ -371,6 +379,15 @@ test('numericListQuery detects exact-number searches for server-side lookup', ()
   assert.equal(numericListQuery('#42x'), null)
   assert.equal(numericListQuery(''), null)
   assert.equal(numericListQuery(null), null)
+})
+
+test('isLookupMiss resolves exact numbers even from an empty window', () => {
+  // An empty "Merged" tab must still look #42 up server-side.
+  assert.equal(isLookupMiss([], 42), true)
+  assert.equal(isLookupMiss([{ number: 7 }], 42), true)
+  assert.equal(isLookupMiss([{ number: 42 }], 42), false)
+  assert.equal(isLookupMiss([], null), false)
+  assert.equal(isLookupMiss([{ number: 42 }], null), false)
 })
 
 test('isLongBody collapses comments over the line/char thresholds', () => {
@@ -446,6 +463,31 @@ test('loginOf coerces REST user objects and strips @', () => {
   assert.equal(loginOf({ login: 'octocat' }), 'octocat')
   assert.equal(loginOf(null), '')
   assert.equal(loginOf('—'), '')
+})
+
+test('projectPaginatedItems routes each projection to its projector', () => {
+  // diff_hunk wins over html_url when both markers are present (inline rows
+  // carry both): the surviving diff_hunk proves inline routing, since the
+  // issue projector drops that key.
+  const inline = [{ id: 1, user: { login: 'octocat' }, body: 'b', html_url: 'u', diff_hunk: '@@' }]
+  const routedInline = projectPaginatedItems(inline, '[.[]|{id,user:.user.login,body:(.body//""),html_url,diff_hunk:(.diff_hunk//"")}]')
+  assert.equal(routedInline[0].user, 'octocat')
+  assert.equal(routedInline[0].diff_hunk, '@@')
+  // html_url alone routes to issue comments.
+  const issue = [{ user: { login: 'x' }, body: 'b', html_url: 'u' }]
+  const routedIssue = projectPaginatedItems(issue, '[.[]|{user:.user.login,created_at,html_url,body:(.body//"")}]')
+  assert.equal(routedIssue[0].user, 'x')
+  assert.ok(!('diff_hunk' in routedIssue[0]))
+  // patch routes to the file projector (lean file rows).
+  const files = [{ filename: 'a', status: 'M', additions: 1, deletions: 0, patch: 'p', extra: true }]
+  assert.deepEqual(
+    projectPaginatedItems(files, '[.[]|{filename,status,additions,deletions,patch:(.patch//"")}]'),
+    [{ filename: 'a', status: 'M', additions: 1, deletions: 0, patch: 'p' }],
+  )
+  // Unknown projections and empty input fall back to raw items.
+  const raw = [{ a: 1 }]
+  assert.equal(projectPaginatedItems(raw, '[.[]|{a}]'), raw)
+  assert.deepEqual(projectPaginatedItems([], '[.[]|{a}]'), [])
 })
 
 test('projectIssueComments projects user login safely and handles missing fields', () => {
@@ -798,6 +840,19 @@ test('mergeRepoOptions pins session/saved repos and dedupes case-insensitively',
   assert.deepEqual(mergeRepoOptions({ discovered: null, pinned: ['ok/repo'] }), ['ok/repo'])
   assert.deepEqual(mergeRepoOptions({}), [])
   assert.deepEqual(mergeRepoOptions({ discovered: ['nope', 'a/b'], pinned: ['a/b'] }), ['a/b'])
+})
+
+test('sq keeps hostile values inside one inert shell word', () => {
+  // Regression: the update compare once interpolated the ledger revision raw.
+  assert.equal(sq('abc1234'), "'abc1234'")
+  assert.equal(sq(''), "''")
+  assert.equal(sq(42), "'42'")
+  const hostile = "x'; touch /tmp/pwned; echo '"
+  const q = sq(hostile)
+  assert.equal(q, "'x'\\''; touch /tmp/pwned; echo '\\'''")
+  // Inside POSIX single quotes everything is literal except ' itself, so
+  // stripping the outer pair plus every escaped quote must leave none behind.
+  assert.ok(!q.slice(1, -1).replace(/'\\''/g, '').includes("'"))
 })
 
 test('parseBehindCount: numeric output is truth, anything else is not behind', () => {

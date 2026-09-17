@@ -254,7 +254,7 @@ const PANE_WRAP_CSS = `
 
 // Shell-quotes one argument (POSIX single quotes). Every value interpolated
 // into a gh/git command goes through this — never build a quoted string by hand.
-function sq(s) {
+export function sq(s) {
   return "'" + String(s).replace(/'/g, "'\\''") + "'"
 }
 
@@ -672,16 +672,17 @@ export function projectIssueComments(items) {
   }))
 }
 
-async function ghApiBigPaginatedProjected(repo, path, jq) {
-  const items = await ghApiBigPaginated(repo, path)
+// Pure dispatch behind ghApiBigPaginatedProjected: marker priority is
+// diff_hunk (inline) > html_url (issue comments) > patch (files); unknown
+// projections fall back to raw items. Tested directly — this router is what
+// keeps full REST user objects out of the render tree (React #31).
+export function projectPaginatedItems(items, jq) {
   if (!jq || !items.length) return items
-  // Project in JS, not `jq`: the binary may be absent and a large printf arg overflows argv.
   const proj = projectionBody(jq)
-  // Recognize the two projections used by this plugin; fall back to raw items.
   if (proj.includes('diff_hunk')) {
     return projectInlineComments(items)
   }
-  if (proj.includes('body_html')) {
+  if (proj.includes('html_url')) {
     return projectIssueComments(items)
   }
   if (proj.includes('patch')) {
@@ -691,6 +692,12 @@ async function ghApiBigPaginatedProjected(repo, path, jq) {
     }))
   }
   return items
+}
+
+async function ghApiBigPaginatedProjected(repo, path, jq) {
+  const items = await ghApiBigPaginated(repo, path)
+  // Project in JS, not `jq`: the binary may be absent and a large printf arg overflows argv.
+  return projectPaginatedItems(items, jq)
 }
 
 async function fetchPrByNumber(repo, n) {
@@ -883,6 +890,13 @@ export function numericListQuery(query) {
   return /^\d+$/.test(q) ? Number(q) : null
 }
 
+// Server-side lookup gate: an exact number missing from the loaded window
+// always resolves remotely, even when the window is empty (an empty "Merged"
+// tab must not read as "no such PR").
+export function isLookupMiss(allItems, exactN) {
+  return exactN != null && !allItems.some(it => it.number === exactN)
+}
+
 export function parseListQuery(query) {
   const authors = [], labels = []
   const text = String(query || '').replace(
@@ -1022,6 +1036,21 @@ const {
   selPr: $selPr,
   selIssue: $selIssue,
 } = githubShellStore
+
+// Cross-repo "open session PR" navigation sets repo + selection together; the
+// repo-change reset below would otherwise clear the just-set selection after
+// the batched commit. The flag names the navigation target repo, armed only
+// when the repo actually changes. The effect matches instead of consuming: a
+// fresh mount never fires (so nothing goes stale), and pane+page each skip
+// the same commit independently. Any other repo change mismatches and clears.
+let suppressRepoResetFor = null
+function navigateToSessionPr(repo, number) {
+  if (repo && repo !== $repo.get()) suppressRepoResetFor = repo
+  if (repo) $repo.set(repo)
+  $tab.set('prs')
+  $selPr.set(number)
+  $selIssue.set(null)
+}
 
 function useRepos() {
   return useQuery({
@@ -1164,10 +1193,7 @@ function SessionPrStatus() {
   if (!cwd || !pr) return null
 
   const openLinked = () => {
-    if (pr.repo) $repo.set(pr.repo)
-    $tab.set('prs')
-    $selPr.set(pr.number)
-    $selIssue.set(null)
+    navigateToSessionPr(pr.repo, pr.number)
     openGithubPane()
   }
 
@@ -1208,7 +1234,7 @@ function PluginUpdateStatus() {
       if (!revision) return { revision: null, behind: 0 }
       // A failed compare (offline, rate-limited, unresolvable revision) is
       // unknown, never "up to date" — behind: null keeps the pill neutral.
-      const ahead = await shJson(`${GH} api repos/${PLUGIN_REPO}/compare/${revision}...main --jq .ahead_by`).catch(() => null)
+      const ahead = await shJson(`${GH} api repos/${PLUGIN_REPO}/compare/${sq(revision)}...main --jq .ahead_by`).catch(() => null)
       return { revision, behind: ahead == null ? null : parseBehindCount(ahead) }
     },
   })
@@ -2551,10 +2577,12 @@ function PrList({ repo, onOpen, query, active = true }) {
   })
   const allItems = Array.isArray(q.data) ? q.data : []
   const exactN = numericListQuery(query)
-  const miss = exactN != null && allItems.length > 0 && !allItems.some(it => it.number === exactN)
+  const miss = isLookupMiss(allItems, exactN)
   const lookup = useQuery({
     queryKey: [ID, 'pr-lookup', repo, exactN],
-    enabled: !!repo && miss,
+    // Defer while the list is on its initial load: q.data is [] until then,
+    // which would fire a redundant lookup the list response may already cover.
+    enabled: !!repo && miss && !q.isLoading,
     queryFn: async () => {
       try { return await fetchPrByNumber(repo, exactN) } catch { return null }
     },
@@ -2634,10 +2662,11 @@ function IssueList({ repo, onOpen, query, active = true }) {
   })
   const allItems = Array.isArray(q.data) ? q.data : []
   const exactN = numericListQuery(query)
-  const miss = exactN != null && allItems.length > 0 && !allItems.some(it => it.number === exactN)
+  const miss = isLookupMiss(allItems, exactN)
   const lookup = useQuery({
     queryKey: [ID, 'issue-lookup', repo, exactN],
-    enabled: !!repo && miss,
+    // Same initial-load deferral as the PR list above.
+    enabled: !!repo && miss && !q.isLoading,
     queryFn: async () => {
       try { return await fetchIssueByNumber(repo, exactN) } catch { return null }
     },
@@ -3254,10 +3283,7 @@ function SessionPrBanner() {
   return jsxs('button', {
     type: 'button',
     onClick: () => {
-      $repo.set(pr.repo)
-      $tab.set('prs')
-      $selPr.set(pr.number)
-      $selIssue.set(null)
+      navigateToSessionPr(pr.repo, pr.number)
     },
     className: 'shrink-0 w-full text-left border-b border-(--ui-stroke-secondary) bg-(--ui-bg-quaternary) px-3 py-2 flex items-center gap-2 hover:bg-(--ui-bg-quinary)',
     children: [
@@ -3321,7 +3347,14 @@ function useGitHubShellState() {
   // mounting the page or pane must not drop the open detail or search.
   const prevRepo = useRef(repo)
   useEffect(() => {
-    if (prevRepo.current !== repo) { $selPr.set(null); $selIssue.set(null); $listQuery.set('') }
+    if (prevRepo.current !== repo) {
+      // A cross-repo session-PR navigation sets the selection together with
+      // the repo (navigateToSessionPr); keep that selection, clear anything
+      // else. The filter always resets: it is shared across repos, so repo
+      // A's query must never follow the user into repo B.
+      $listQuery.set('')
+      if (suppressRepoResetFor !== repo) { $selPr.set(null); $selIssue.set(null) }
+    }
     prevRepo.current = repo
   }, [repo])
 

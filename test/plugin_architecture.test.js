@@ -201,6 +201,8 @@ test('Issue #55: lists cap explicitly and load more on demand', () => {
     assert.ok(list.includes('placeholderData: (prev) => prev'), `${name}: growth must hold rows`)
     assert.ok(list.includes('ListMoreFooter({ q, limit, setLimit, allItems })'), `${name}: footer not wired`)
     assert.ok(list.includes('q.isError && !allItems.length'), `${name}: refetch failure must keep rows`)
+    assert.ok(list.includes('isLookupMiss(allItems, exactN)'), `${name}: exact-number lookup must not depend on a non-empty window`)
+    assert.ok(list.includes('enabled: !!repo && miss && !q.isLoading'), `${name}: lookup must wait for the initial list load`)
   }
 })
 
@@ -259,7 +261,7 @@ test('Self-updater shows the installed revision and a one-click update', () => {
   assert.ok(upd.includes('PLUGIN_LEDGER_PATH'), 'revision must come from the install ledger')
   assert.ok(source.includes("const PLUGIN_LEDGER_PATH = '${HERMES_HOME}/plugins/.install-metadata.json'"), 'ledger path must expand $HERMES_HOME')
   // Behind: GitHub compare (shallow installs cannot rev-list), parsed safely.
-  assert.ok(upd.includes('compare/${revision}...main --jq .ahead_by'), 'behind must come from the GitHub compare')
+  assert.ok(upd.includes('compare/${sq(revision)}...main --jq .ahead_by'), 'behind must come from the GitHub compare with the ledger value quoted')
   assert.ok(upd.includes('parseBehindCount(ahead)'), 'count must go through the tested parser')
   assert.ok(upd.includes('behind: ahead == null ? null : parseBehindCount(ahead)'), 'a failed compare is unknown, never "up to date"')
   assert.ok(upd.includes('if (!revision) return null'), 'no footprint when not an installed package')
@@ -279,4 +281,14 @@ test('Merged transcript PRs unlink: session falls back until the next PR', () =>
 test('Session queries re-poll so opened/merged PRs surface without refocus', () => {
   const hook = source.slice(source.indexOf('function useSessionGit'), source.indexOf('function StateDot'))
   assert.equal((hook.match(/refetchInterval: MEDIUM_POLL_MS/g) || []).length, 3)
+})
+
+test('Cross-repo session-PR navigation keeps the just-set selection', () => {
+  const status = source.slice(source.indexOf('function SessionPrStatus'), source.indexOf('function SessionBranchStatus'))
+  const banner = source.slice(source.indexOf('function SessionPrBanner'), source.indexOf('function useGitHubShellState'))
+  const shell = source.slice(source.indexOf('function useGitHubShellState'), source.indexOf('function useListKeyboardFlow'))
+  assert.ok(status.includes('navigateToSessionPr(pr.repo, pr.number)'), 'status click must route through the shared navigation')
+  assert.ok(banner.includes('navigateToSessionPr(pr.repo, pr.number)'), 'banner click must route through the shared navigation')
+  assert.ok(shell.includes('if (suppressRepoResetFor !== repo) { $selPr.set(null); $selIssue.set(null) }'), 'repo reset must match the navigation target, never consume a boolean')
+  assert.ok(shell.includes("$listQuery.set('')"), 'the shared filter resets on every repo change, navigation included')
 })
