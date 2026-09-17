@@ -498,30 +498,44 @@ function sendCommentToChat(c) {
 // System32, which would run the command against a different filesystem (and
 // no `gh`). Derive bash from the resolved `git` install instead.
 let bashPath = null
-const shCmd = cmd => (POSIX_SHELL ? cmd : `${bashPath ?? 'bash'} -lc ${JSON.stringify(cmd)}`)
+let bashReady = null
+const shCmd = cmd => (POSIX_SHELL ? cmd : `${bashPath} -lc ${JSON.stringify(cmd)}`)
 
 /** Resolve Git for Windows' bash once. No-op on POSIX, where commands run as-is. */
-async function resolveBash() {
-  if (POSIX_SHELL) return
-  try {
-    const r = await host.request('shell.exec', { command: 'where git' })
-    const git = (r.stdout || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean)[0]
-    if (!git) return
-    // <root>\cmd\git.exe | <root>\mingw64\bin\git.exe -> <root>\bin\bash.exe
-    const m = git.match(/^(.*?)[\\/](?:cmd|mingw64[\\/]bin|usr[\\/]bin)[\\/][^\\/]+$/i)
-    const root = m ? m[1] : git.replace(/[\\/][^\\/]+$/, '')
-    for (const candidate of [`${root}\\bin\\bash.exe`, `${root}\\usr\\bin\\bash.exe`]) {
-      const probe = await host.request('shell.exec', { command: `if exist "${candidate}" echo FOUND` })
-      if ((probe.stdout || '').includes('FOUND')) {
-        bashPath = `"${candidate}"`
-        return
+function resolveBash() {
+  if (bashReady) return bashReady
+  bashReady = (async () => {
+    if (POSIX_SHELL) return
+    try {
+      const r = await host.request('shell.exec', { command: 'where git' })
+      const git = (r.stdout || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean)[0]
+      if (!git) return
+      const normalizedGit = git.replaceAll('\\\\', '/')
+      // <root>/cmd/git.exe | <root>/mingw64/bin/git.exe -> <root>/bin/bash.exe
+      const m = normalizedGit.match(/^(.*)\/(?:cmd|mingw64\/bin|usr\/bin)\/[^/]+$/i)
+      const root = m ? m[1] : normalizedGit.replace(/\/[^/]+$/, '')
+      for (const candidate of [`${root}\\bin\\bash.exe`, `${root}\\usr\\bin\\bash.exe`]) {
+        const probe = await host.request('shell.exec', { command: `if exist "${candidate}" echo FOUND` })
+        if ((probe.stdout || '').includes('FOUND')) {
+          bashPath = `"${candidate}"`
+          return
+        }
       }
-    }
-  } catch { /* keep the bare-bash fallback */ }
+    } catch { /* report a clear error below */ }
+  })()
+  return bashReady
+}
+
+async function shellCommand(cmd) {
+  await resolveBash()
+  if (!POSIX_SHELL && !bashPath) {
+    throw new Error('Git for Windows bash.exe was not found. Install Git for Windows and restart Hermes Desktop.')
+  }
+  return shCmd(cmd)
 }
 
 async function sh(cmd) {
-  const r = await host.request('shell.exec', { command: shCmd(cmd) })
+  const r = await host.request('shell.exec', { command: await shellCommand(cmd) })
   if (r.code !== 0) throw new Error((r.stderr || r.stdout || `exit ${r.code}`).trim().slice(0, 600))
   return (r.stdout || '').trim()
 }
@@ -749,7 +763,7 @@ async function fetchIssueByNumber(repo, n) {
 }
 
 async function shJsonLoose(cmd) {
-  const r = await host.request('shell.exec', { command: shCmd(cmd) })
+  const r = await host.request('shell.exec', { command: await shellCommand(cmd) })
   const out = (r.stdout || '').trim()
   if (!out) {
     if (r.code !== 0) throw new Error((r.stderr || `exit ${r.code}`).trim().slice(0, 400))
@@ -3565,8 +3579,7 @@ export default {
   name: 'GitHermes',
   register(ctx) {
     pluginCtx = ctx
-    // Resolve Git for Windows' bash before the first command goes out; a no-op
-    // on POSIX. Fire-and-forget: `shCmd` falls back to bare `bash` until it lands.
+    // Start the shared probe; shellCommand awaits it before any command runs.
     resolveBash()
     const saved = ctx.storage.get('repo')
     if (saved) $repo.set(saved)

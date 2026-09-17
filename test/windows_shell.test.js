@@ -25,7 +25,7 @@ test('shell: every shell.exec goes through the shCmd wrapper', () => {
   const calls = source.match(/host\.request\('shell\.exec', \{ command: [^}]*\}/g) || []
   assert.ok(calls.length >= 4, 'expected the wrapper plus the two bash probes')
   for (const call of calls) {
-    const ok = call.includes('shCmd(') || call.includes("'where git'") || call.includes('if exist')
+    const ok = call.includes('shellCommand(') || call.includes("'where git'") || call.includes('if exist')
     assert.ok(ok, `unwrapped shell.exec call site: ${call}`)
   }
 })
@@ -36,10 +36,15 @@ test('shell: Windows routes through Git bash, not WSL bash', () => {
   // installed Git instead of trusting PATH.
   assert.ok(source.includes('function resolveBash'), 'resolveBash is missing')
   assert.ok(source.includes('command: \'where git\''), 'bash must be derived from the git install')
+  assert.ok(source.includes("git.replaceAll('\\\\\\\\', '/')"), 'Windows paths must be normalized before parsing')
+  assert.ok(source.includes('(?:cmd|mingw64\\/bin|usr\\/bin)'), 'all Git-for-Windows install layouts must resolve')
   assert.ok(source.includes('bin\\\\bash.exe'), 'expected Git-for-Windows bash candidates')
   assert.ok(!/const BASH = '[A-Z]:/.test(source), 'bash path must not be hardcoded to a drive letter')
-  // `shCmd` must tolerate resolveBash not having landed yet (it is fire-and-forget).
-  assert.ok(source.includes("bashPath ?? 'bash'"), 'shCmd needs a pre-resolution fallback')
+  // The first command must wait for the Git-for-Windows probe; it must never
+  // race into bare `bash` and accidentally launch System32's WSL shim.
+  assert.ok(source.includes('let bashReady = null'), 'bash resolution must be shared')
+  assert.ok(source.includes('await resolveBash()'), 'shell commands must await bash resolution')
+  assert.ok(source.includes("Git for Windows bash.exe was not found"), 'missing Git Bash needs a clear recovery error')
 })
 
 test('shell: bash is resolved once at registration', () => {
