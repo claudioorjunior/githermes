@@ -2467,7 +2467,9 @@ function PrList({ repo, onOpen, query, active = true }) {
   const miss = isLookupMiss(allItems, exactN)
   const lookup = useQuery({
     queryKey: [ID, 'pr-lookup', repo, exactN],
-    enabled: !!repo && miss,
+    // Defer while the list is on its initial load: q.data is [] until then,
+    // which would fire a redundant lookup the list response may already cover.
+    enabled: !!repo && miss && !q.isLoading,
     queryFn: async () => {
       try { return await fetchPrByNumber(repo, exactN) } catch { return null }
     },
@@ -2550,7 +2552,8 @@ function IssueList({ repo, onOpen, query, active = true }) {
   const miss = isLookupMiss(allItems, exactN)
   const lookup = useQuery({
     queryKey: [ID, 'issue-lookup', repo, exactN],
-    enabled: !!repo && miss,
+    // Same initial-load deferral as the PR list above.
+    enabled: !!repo && miss && !q.isLoading,
     queryFn: async () => {
       try { return await fetchIssueByNumber(repo, exactN) } catch { return null }
     },
