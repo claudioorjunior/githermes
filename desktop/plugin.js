@@ -1006,6 +1006,20 @@ const {
   selIssue: $selIssue,
 } = githubShellStore
 
+// Cross-repo "open session PR" navigation sets repo + selection together; the
+// repo-change reset below would otherwise clear the just-set selection after
+// the batched commit. The flag carries that intent to the effect, armed only
+// when the repo actually changes so a same-repo click never suppresses a
+// later real reset.
+let suppressRepoReset = false
+function navigateToSessionPr(repo, number) {
+  if (repo && repo !== $repo.get()) suppressRepoReset = true
+  if (repo) $repo.set(repo)
+  $tab.set('prs')
+  $selPr.set(number)
+  $selIssue.set(null)
+}
+
 function useRepos() {
   return useQuery({
     queryKey: [ID, 'repos'],
@@ -1140,10 +1154,7 @@ function SessionPrStatus() {
   if (!cwd || !pr) return null
 
   const openLinked = () => {
-    if (pr.repo) $repo.set(pr.repo)
-    $tab.set('prs')
-    $selPr.set(pr.number)
-    $selIssue.set(null)
+    navigateToSessionPr(pr.repo, pr.number)
     openGithubPane()
   }
 
@@ -3160,10 +3171,7 @@ function SessionPrBanner() {
   return jsxs('button', {
     type: 'button',
     onClick: () => {
-      $repo.set(pr.repo)
-      $tab.set('prs')
-      $selPr.set(pr.number)
-      $selIssue.set(null)
+      navigateToSessionPr(pr.repo, pr.number)
     },
     className: 'shrink-0 w-full text-left border-b border-(--ui-stroke-secondary) bg-(--ui-bg-quaternary) px-3 py-2 flex items-center gap-2 hover:bg-(--ui-bg-quinary)',
     children: [
@@ -3227,7 +3235,12 @@ function useGitHubShellState() {
   // mounting the page or pane must not drop the open detail or search.
   const prevRepo = useRef(repo)
   useEffect(() => {
-    if (prevRepo.current !== repo) { $selPr.set(null); $selIssue.set(null); $listQuery.set('') }
+    if (prevRepo.current !== repo) {
+      // A cross-repo session-PR navigation sets the selection together with
+      // the repo (navigateToSessionPr); keep it, clear only otherwise.
+      if (suppressRepoReset) suppressRepoReset = false
+      else { $selPr.set(null); $selIssue.set(null); $listQuery.set('') }
+    }
     prevRepo.current = repo
   }, [repo])
 

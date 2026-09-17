@@ -254,3 +254,12 @@ test('Session queries re-poll so opened/merged PRs surface without refocus', () 
   const hook = source.slice(source.indexOf('function useSessionGit'), source.indexOf('function StateDot'))
   assert.equal((hook.match(/refetchInterval: MEDIUM_POLL_MS/g) || []).length, 3)
 })
+
+test('Cross-repo session-PR navigation keeps the just-set selection', () => {
+  const status = source.slice(source.indexOf('function SessionPrStatus'), source.indexOf('function SessionBranchStatus'))
+  const banner = source.slice(source.indexOf('function SessionPrBanner'), source.indexOf('function useGitHubShellState'))
+  const shell = source.slice(source.indexOf('function useGitHubShellState'), source.indexOf('function useListKeyboardFlow'))
+  assert.ok(status.includes('navigateToSessionPr(pr.repo, pr.number)'), 'status click must route through the shared navigation')
+  assert.ok(banner.includes('navigateToSessionPr(pr.repo, pr.number)'), 'banner click must route through the shared navigation')
+  assert.ok(shell.includes('if (suppressRepoReset) suppressRepoReset = false'), 'repo reset must honor an armed navigation')
+})
