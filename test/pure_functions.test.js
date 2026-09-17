@@ -34,6 +34,7 @@ import {
   commentBodyOk,
   loginOf,
   projectIssueComments,
+  projectPaginatedItems,
   isMergeConflict,
   canApprove,
   issueAction,
@@ -342,8 +343,13 @@ test('projectionBody strips only the outer array brackets so projections run (re
   const inlineJq =
     '[.[]|{id,user:.user.login,body:(.body//""),path,line,original_line,in_reply_to_id,created_at,html_url,diff_hunk:(.diff_hunk//"")}]'
   const filesJq = '[.[]|{filename,status,additions,deletions,patch:(.patch//"")}]'
+  // Issue comments must stay recognizable without body_html (dropped: dead
+  // weight, never rendered) — html_url is the marker, diff_hunk still wins.
+  const issueCommentsJq = '[.[]|{user:.user.login,created_at,html_url,body:(.body//"")}]'
   assert.ok(projectionBody(inlineJq).includes('diff_hunk'))
   assert.ok(projectionBody(filesJq).includes('patch'))
+  assert.ok(projectionBody(issueCommentsJq).includes('html_url'))
+  assert.ok(!projectionBody(issueCommentsJq).includes('body_html'))
   assert.equal(projectionBody(null), '')
   // Non-array filters stay untouched (no projection recognized -> raw fallback).
   assert.equal(projectionBody('{number,title}'), '{number,title}')
@@ -457,6 +463,31 @@ test('loginOf coerces REST user objects and strips @', () => {
   assert.equal(loginOf({ login: 'octocat' }), 'octocat')
   assert.equal(loginOf(null), '')
   assert.equal(loginOf('—'), '')
+})
+
+test('projectPaginatedItems routes each projection to its projector', () => {
+  // diff_hunk wins over html_url when both markers are present (inline rows
+  // carry both): the surviving diff_hunk proves inline routing, since the
+  // issue projector drops that key.
+  const inline = [{ id: 1, user: { login: 'octocat' }, body: 'b', html_url: 'u', diff_hunk: '@@' }]
+  const routedInline = projectPaginatedItems(inline, '[.[]|{id,user:.user.login,body:(.body//""),html_url,diff_hunk:(.diff_hunk//"")}]')
+  assert.equal(routedInline[0].user, 'octocat')
+  assert.equal(routedInline[0].diff_hunk, '@@')
+  // html_url alone routes to issue comments.
+  const issue = [{ user: { login: 'x' }, body: 'b', html_url: 'u' }]
+  const routedIssue = projectPaginatedItems(issue, '[.[]|{user:.user.login,created_at,html_url,body:(.body//"")}]')
+  assert.equal(routedIssue[0].user, 'x')
+  assert.ok(!('diff_hunk' in routedIssue[0]))
+  // patch routes to the file projector (lean file rows).
+  const files = [{ filename: 'a', status: 'M', additions: 1, deletions: 0, patch: 'p', extra: true }]
+  assert.deepEqual(
+    projectPaginatedItems(files, '[.[]|{filename,status,additions,deletions,patch:(.patch//"")}]'),
+    [{ filename: 'a', status: 'M', additions: 1, deletions: 0, patch: 'p' }],
+  )
+  // Unknown projections and empty input fall back to raw items.
+  const raw = [{ a: 1 }]
+  assert.equal(projectPaginatedItems(raw, '[.[]|{a}]'), raw)
+  assert.deepEqual(projectPaginatedItems([], '[.[]|{a}]'), [])
 })
 
 test('projectIssueComments projects user login safely and handles missing fields', () => {

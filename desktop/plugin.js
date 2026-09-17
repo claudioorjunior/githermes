@@ -660,16 +660,17 @@ export function projectIssueComments(items) {
   }))
 }
 
-async function ghApiBigPaginatedProjected(repo, path, jq) {
-  const items = await ghApiBigPaginated(repo, path)
+// Pure dispatch behind ghApiBigPaginatedProjected: marker priority is
+// diff_hunk (inline) > html_url (issue comments) > patch (files); unknown
+// projections fall back to raw items. Tested directly — this router is what
+// keeps full REST user objects out of the render tree (React #31).
+export function projectPaginatedItems(items, jq) {
   if (!jq || !items.length) return items
-  // Project in JS, not `jq`: the binary may be absent and a large printf arg overflows argv.
   const proj = projectionBody(jq)
-  // Recognize the two projections used by this plugin; fall back to raw items.
   if (proj.includes('diff_hunk')) {
     return projectInlineComments(items)
   }
-  if (proj.includes('body_html')) {
+  if (proj.includes('html_url')) {
     return projectIssueComments(items)
   }
   if (proj.includes('patch')) {
@@ -679,6 +680,12 @@ async function ghApiBigPaginatedProjected(repo, path, jq) {
     }))
   }
   return items
+}
+
+async function ghApiBigPaginatedProjected(repo, path, jq) {
+  const items = await ghApiBigPaginated(repo, path)
+  // Project in JS, not `jq`: the binary may be absent and a large printf arg overflows argv.
+  return projectPaginatedItems(items, jq)
 }
 
 async function fetchPrByNumber(repo, n) {
@@ -2991,7 +2998,7 @@ function PrDetail({ repo, number, onBack, active = true }) {
     enabled: !!repo && !!number && active && page === 'conversation',
     queryFn: async () => {
       const [comments, reviews, inline] = await Promise.all([
-        ghApiBigPaginatedProjected(repo, `issues/${n}/comments?per_page=100`, '[.[]|{user:.user.login,created_at,html_url,body:(.body//""),body_html:(.body_html//"")}]'),
+        ghApiBigPaginatedProjected(repo, `issues/${n}/comments?per_page=100`, '[.[]|{user:.user.login,created_at,html_url,body:(.body//"")}]'),
         ghApiBig(repo, `pulls/${n}/reviews`, '[.[:15][]|{user:.user.login,state,html_url,body:(.body//""),submitted_at}]'),
         // Issue #9: line-level review comments live on their own endpoint; bodies
         // and hunks are big, so same shBig routing as the rest of this query.
