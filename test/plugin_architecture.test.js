@@ -196,6 +196,37 @@ test('Issue #55: lists cap explicitly and load more on demand', () => {
   }
 })
 
+test('PR list rows carry a state indicator open/draft/merged/closed', () => {
+  const prs = source.slice(source.indexOf('function PrList'), source.indexOf('function IssueList'))
+  assert.ok(prs.includes('STATE_PILL[prStateKey(pr)]'), 'list must reuse the detail pill state table')
+  assert.ok(prs.includes('title: (STATE_PILL[prStateKey(pr)] || STATE_PILL.open).label'), 'indicator needs a tooltip label')
+  assert.ok(prs.includes('style: { color:'), 'indicator colors come from the state table')
+})
+
+test('Repo picker rows drag to reorder and the order persists', () => {
+  const picker = source.slice(source.indexOf('function RepoPicker'), source.indexOf('export function labelTextColor'))
+  const shell = source.slice(source.indexOf('function useGitHubShellState'), source.indexOf('function useListKeyboardFlow'))
+  const store = source.slice(source.indexOf('export function getGitHubShellStore'), source.indexOf('const githubShellStore ='))
+  // DnD wiring: native drag on rows, drop commits, order lands in storage.
+  assert.ok(picker.includes('draggable: true'), 'rows must be natively draggable')
+  assert.ok(picker.includes('onDragStart') && picker.includes('onDrop'), 'drag handlers missing')
+  assert.ok(picker.includes("effectAllowed = 'move'"), 'drag must be move-only')
+  assert.ok(picker.includes("storage.set('repoOrder'"), 'drop must persist the order')
+  assert.ok(picker.includes('jsxs(Popover'), 'picker must be a popover list (Select cannot host drag)')
+  assert.ok(picker.includes("title: 'Drag to reorder'"), 'every row needs the movable affordance tooltip')
+  // Downward drops: the bar sits above row idx, removal shifts left first.
+  assert.ok(picker.includes('dragIdx < idx ? idx - 1 : idx'), 'downward drop must compensate the removal shift')
+  // Keyboard parity: rows are divs, so they must act like options.
+  assert.ok(picker.includes("role: 'option'") && picker.includes('tabIndex: 0'), 'rows must be focusable options')
+  assert.ok(picker.includes('onKeyDown'), 'rows need Enter/Space activation')
+  // Shell feeds the saved order to the merge and hydrates it once.
+  assert.ok(shell.includes('ordered: repoOrder || []'), 'shell must pass the saved order')
+  assert.ok(shell.includes("storage.get('repoOrder')"), 'shell must hydrate the saved order')
+  assert.ok(shell.includes('if (!pluginCtx || githubShellStore.repoOrder.get()) return'), 'hydration must retry until pluginCtx exists')
+  // Hot-reload backfill: the cached store predates newer atoms.
+  assert.ok(store.includes('if (!store.repoOrder) store.repoOrder = atom(null)'), 'hot reload must backfill new atoms')
+})
+
 test('Session branch lives in the status bar and hides without git state', () => {
   const status = source.slice(source.indexOf('function SessionBranchStatus'), source.indexOf('function RepoLabel'))
   assert.ok(status.includes('if (!cwd || !branch || !repo) return null'), 'no footprint without git state, never a stale repo')

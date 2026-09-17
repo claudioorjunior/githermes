@@ -30,6 +30,9 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  Popover,
+  PopoverTrigger,
+  PopoverContent,
   Codicon,
   icons,
   cn,
@@ -105,12 +108,24 @@ const PANE_WRAP_CSS = `
   border-radius: 999px;
   background: transparent;
   box-shadow: none;
-  border-color: var(--ui-stroke-secondary);
+  border: 1px solid var(--ui-stroke-secondary);
 }
 .githermes-pane .gh-repo-trigger:hover,
 .githermes-pane .gh-repo-trigger[data-state='open'] {
   background: var(--ui-bg-quinary);
   box-shadow: none;
+}
+/* Unscoped: the picker popover portals outside .githermes-pane, so the
+   gh- prefix alone namespaces these (hover + drop-target affordance).
+   Globally visible by construction — keep the gh- prefix unique. */
+.gh-repo-option { cursor: pointer; }
+.gh-repo-option:hover { background: var(--ui-bg-quinary); }
+.gh-repo-grip { cursor: grab; opacity: 0.7; }
+.gh-repo-option:hover .gh-repo-grip { opacity: 1; }
+.gh-repo-option:active .gh-repo-grip { cursor: grabbing; }
+.gh-repo-option-drop {
+  border-top: 2px solid var(--ui-accent);
+  margin-top: -2px;
 }
 .githermes-pane .gh-list { display: flex; flex-direction: column; gap: 6px; padding: 8px; }
 .githermes-pane .gh-list-row {
@@ -510,7 +525,7 @@ export function repoOk(r) {
 
 // Issue #56: keep session/persisted repos selectable even when outside gh's first 30.
 // Pins stay in front; remaining discovered names sort A–Z. Case-insensitive dedupe.
-export function mergeRepoOptions({ discovered = [], pinned = [] } = {}) {
+export function mergeRepoOptions({ discovered = [], pinned = [], ordered = [] } = {}) {
   const seen = new Set()
   const out = []
   const take = raw => {
@@ -522,6 +537,10 @@ export function mergeRepoOptions({ discovered = [], pinned = [] } = {}) {
     out.push(name)
     return true
   }
+  // User-dragged order wins; pinned (session/saved/current) follows; the rest
+  // is alphabetical. Ordered entries survive even when gh's discovery window
+  // stops returning them (#56 rationale).
+  for (const o of Array.isArray(ordered) ? ordered : []) take(o)
   for (const p of Array.isArray(pinned) ? pinned : []) take(p)
   const rest = []
   for (const d of Array.isArray(discovered) ? discovered : []) {
@@ -969,9 +988,15 @@ export function getGitHubShellStore() {
       issueState: atom('open'),
       selPr: atom(null),
       selIssue: atom(null),
+      // User-dragged repo order (picker DnD); hydrated from storage on first
+      // shell mount, persisted on every drop. Null = never arranged.
+      repoOrder: atom(null),
     }
     globalThis[GITHUB_SHELL_STORE_KEY] = store
   }
+  // Hot reload: the cached store was built by an older plugin build, so atoms
+  // added since must be backfilled here or fresh modules dereference undefined.
+  if (!store.repoOrder) store.repoOrder = atom(null)
   return store
 }
 
@@ -1305,40 +1330,92 @@ function RepoPicker({ repos, value, onChange }) {
     }
   }
 
+  // Picker DnD: HTML5 native drag on the option rows. ponytail: no auto-scroll
+  // near the popover edges — the list is <= ~34 rows, scroll manually first.
+  const [open, setOpen] = useState(false)
+  const [dragIdx, setDragIdx] = useState(null)
+  const [overIdx, setOverIdx] = useState(null)
+
+  const commitOrder = next => {
+    githubShellStore.repoOrder.set(next)
+    pluginCtx?.storage.set('repoOrder', next)
+  }
+  const resetDrag = () => { setDragIdx(null); setOverIdx(null) }
+  const dropOn = idx => {
+    if (dragIdx == null) return resetDrag()
+    if (idx !== dragIdx) {
+      const next = [...list]
+      const [moved] = next.splice(dragIdx, 1)
+      // The drop bar sits above row idx; removing a row above the target
+      // shifts it one left, so insert before the row the bar pointed at.
+      next.splice(dragIdx < idx ? idx - 1 : idx, 0, moved)
+      commitOrder(next)
+    }
+    resetDrag()
+  }
+
   return jsxs('div', {
     className: 'flex min-w-0 flex-col gap-1.5',
     children: [
       list.length
-        ? jsxs(Select, {
-          value: showManual ? OTHER : (value || '__none__'),
-          onValueChange: v => {
-            if (v === OTHER) {
-              setManualOpen(true)
-              setError('')
-              return
-            }
-            if (v === '__none__') return
-            setManualOpen(false)
-            setError('')
-            onChange(v)
-          },
+        ? jsxs(Popover, {
+          open,
+          onOpenChange: o => { setOpen(o); resetDrag() },
           children: [
-            jsx(SelectTrigger, {
-              className: 'gh-repo-trigger text-xs',
-              children: jsx(SelectValue, {
-                placeholder: 'Select repository',
-                children: showManual
+            jsx(PopoverTrigger, {
+              className: 'gh-repo-trigger text-xs flex min-w-0 items-center justify-between gap-2 px-3',
+              'aria-label': 'Select repository',
+              children: jsxs('span', { className: 'flex min-w-0 flex-1 items-center justify-between gap-2', children: [
+                showManual
                   ? jsx('span', { className: 'text-(--ui-text-tertiary)', children: 'Use another repository…' })
                   : value
                     ? jsx(RepoLabel, { repo: value })
-                    : undefined,
-              }),
+                    : jsx('span', { className: 'text-(--ui-text-tertiary)', children: 'Select repository' }),
+                jsx(Codicon, { name: 'chevron-down', size: 12, className: 'shrink-0 opacity-60' }),
+              ] }),
             }),
-            jsxs(SelectContent, {
-              children: [
-                ...list.map(r => jsx(SelectItem, { value: r, children: jsx(RepoLabel, { repo: r, size: 18 }) }, r)),
-                jsx(SelectItem, { value: OTHER, children: 'Use another repository…' }, OTHER),
-              ],
+            jsx(PopoverContent, {
+              align: 'start',
+              className: 'w-80 p-1',
+              // Native CSS scroll, not ScrollArea: inside the popover there is
+              // no definite height, so the Radix viewport grows to content and
+              // the clipped popover looks locked. overflow-y-auto just works.
+              children: jsxs('div', { role: 'listbox', 'aria-label': 'Repositories', className: 'max-h-72 overflow-y-auto', children: [
+                ...list.map((r, i) => jsxs('div', {
+                  draggable: true,
+                  role: 'option',
+                  tabIndex: 0,
+                  'aria-selected': value === r,
+                  onDragStart: e => {
+                    setDragIdx(i)
+                    try { e.dataTransfer.setData('text/plain', String(r)); e.dataTransfer.effectAllowed = 'move' } catch {}
+                  },
+                  onDragOver: e => { if (dragIdx != null) { e.preventDefault(); if (overIdx !== i) setOverIdx(i) } },
+                  onDrop: e => { e.preventDefault(); dropOn(i) },
+                  onDragEnd: resetDrag,
+                  onClick: () => { if (valueRef.current !== r) onChange(r); setManualOpen(false); setError(''); setOpen(false) },
+                  onKeyDown: e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (valueRef.current !== r) onChange(r); setManualOpen(false); setError(''); setOpen(false) } },
+                  className: 'gh-repo-option flex items-center gap-2 rounded-md px-2 py-1.5 text-xs'
+                    + (dragIdx === i ? ' opacity-40' : '')
+                    + (overIdx === i && dragIdx != null && dragIdx !== i ? ' gh-repo-option-drop' : ''),
+                  children: [
+                    // Drag affordance: always-visible grip, grab cursor, tooltip.
+                    // Glyph name must exist in the codicon font (see codicon.ttf
+                    // post table) — a made-up name renders an empty <i>.
+                    jsx(Codicon, { name: 'gripper', size: 12, className: 'gh-repo-grip shrink-0', title: 'Drag to reorder', 'aria-hidden': true }),
+                    jsx('span', { className: 'flex min-w-0 flex-1', children: jsx(RepoLabel, { repo: r, size: 18 }) }),
+                    value === r ? jsx(Codicon, { name: 'check', size: 12, className: 'shrink-0' }) : null,
+                  ],
+                }, r)),
+                jsx('div', {
+                  role: 'option',
+                  tabIndex: 0,
+                  onClick: () => { setManualOpen(true); setError(''); setOpen(false) },
+                  onKeyDown: e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setManualOpen(true); setError(''); setOpen(false) } },
+                  className: 'gh-repo-option flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-(--ui-text-tertiary)',
+                  children: [jsx(Codicon, { name: 'plus', size: 12, className: 'shrink-0' }), 'Use another repository…'],
+                }, OTHER),
+              ] }),
             }),
           ],
         })
@@ -2498,7 +2575,12 @@ function PrList({ repo, onOpen, query, active = true }) {
             jsxs('span', {
               className: 'min-w-0 flex-1',
               children: [
-                jsx('button', { type: 'button', className: 'gh-row-open block w-full text-left', children: jsx(ItemTitle, { title: pr.title, number: pr.number }) }),
+                jsxs('button', { type: 'button', className: 'gh-row-open flex w-full items-center gap-1.5 text-left', children: [
+                  // State indicator reuses the detail pill's table (icon + color +
+                  // tooltip label), so open/draft/merged/closed read at a glance.
+                  jsx(Codicon, { name: (STATE_PILL[prStateKey(pr)] || STATE_PILL.open).icon, size: 14, style: { color: (STATE_PILL[prStateKey(pr)] || STATE_PILL.open).bg }, title: (STATE_PILL[prStateKey(pr)] || STATE_PILL.open).label, className: 'shrink-0' }),
+                  jsx(ItemTitle, { title: pr.title, number: pr.number }),
+                ] }),
                 jsxs('span', { className: 'mt-1 flex flex-wrap items-center gap-x-1.5 text-[10px] text-(--ui-text-tertiary)', children: [
                   pr.author?.login ? jsx('button', { type: 'button', className: 'gh-filter-token', onClick: event => setListFilter(event, 'author', pr.author?.login), children: `@${pr.author.login}` }) : null,
                   ...(Array.isArray(pr.labels) ? pr.labels.map(l => jsx(LabelChip, { label: l, onClick: event => setListFilter(event, 'label', l.name) }, l.name || l.id)) : []),
@@ -3183,12 +3265,23 @@ function useGitHubShellState() {
   const cwd = useValue(host.state.cwd)
   const gitQ = useSessionGit(cwd)
   const savedRepo = pluginCtx?.storage.get('repo')
+  const repoOrder = useValue(githubShellStore.repoOrder)
+  // One-time hydration: pluginCtx/storage exist only after registration, so
+  // the saved drag order can't be read at store creation. No-deps effect that
+  // retries until it sticks: if pluginCtx is not there yet, a later render
+  // tries again instead of losing the stored order forever.
+  useEffect(() => {
+    if (!pluginCtx || githubShellStore.repoOrder.get()) return
+    const stored = pluginCtx.storage.get('repoOrder')
+    if (Array.isArray(stored) && stored.length) githubShellStore.repoOrder.set(stored)
+  })
   const repoOptions = useMemo(
     () => mergeRepoOptions({
       discovered: reposQ.data || [],
       pinned: [gitQ.data?.repo, savedRepo, repo],
+      ordered: repoOrder || [],
     }),
-    [reposQ.data, gitQ.data?.repo, savedRepo, repo],
+    [reposQ.data, gitQ.data?.repo, savedRepo, repo, repoOrder],
   )
 
   useEffect(() => {
