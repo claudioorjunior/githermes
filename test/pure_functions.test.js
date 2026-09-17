@@ -340,8 +340,13 @@ test('projectionBody strips only the outer array brackets so projections run (re
   const inlineJq =
     '[.[]|{id,user:.user.login,body:(.body//""),path,line,original_line,in_reply_to_id,created_at,html_url,diff_hunk:(.diff_hunk//"")}]'
   const filesJq = '[.[]|{filename,status,additions,deletions,patch:(.patch//"")}]'
+  // Issue comments must stay recognizable without body_html (dropped: dead
+  // weight, never rendered) — html_url is the marker, diff_hunk still wins.
+  const issueCommentsJq = '[.[]|{user:.user.login,created_at,html_url,body:(.body//"")}]'
   assert.ok(projectionBody(inlineJq).includes('diff_hunk'))
   assert.ok(projectionBody(filesJq).includes('patch'))
+  assert.ok(projectionBody(issueCommentsJq).includes('html_url'))
+  assert.ok(!projectionBody(issueCommentsJq).includes('body_html'))
   assert.equal(projectionBody(null), '')
   // Non-array filters stay untouched (no projection recognized -> raw fallback).
   assert.equal(projectionBody('{number,title}'), '{number,title}')
