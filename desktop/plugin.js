@@ -1008,12 +1008,13 @@ const {
 
 // Cross-repo "open session PR" navigation sets repo + selection together; the
 // repo-change reset below would otherwise clear the just-set selection after
-// the batched commit. The flag carries that intent to the effect, armed only
-// when the repo actually changes so a same-repo click never suppresses a
-// later real reset.
-let suppressRepoReset = false
+// the batched commit. The flag names the navigation target repo, armed only
+// when the repo actually changes. The effect matches instead of consuming: a
+// fresh mount never fires (so nothing goes stale), and pane+page each skip
+// the same commit independently. Any other repo change mismatches and clears.
+let suppressRepoResetFor = null
 function navigateToSessionPr(repo, number) {
-  if (repo && repo !== $repo.get()) suppressRepoReset = true
+  if (repo && repo !== $repo.get()) suppressRepoResetFor = repo
   if (repo) $repo.set(repo)
   $tab.set('prs')
   $selPr.set(number)
@@ -3237,9 +3238,11 @@ function useGitHubShellState() {
   useEffect(() => {
     if (prevRepo.current !== repo) {
       // A cross-repo session-PR navigation sets the selection together with
-      // the repo (navigateToSessionPr); keep it, clear only otherwise.
-      if (suppressRepoReset) suppressRepoReset = false
-      else { $selPr.set(null); $selIssue.set(null); $listQuery.set('') }
+      // the repo (navigateToSessionPr); keep that selection, clear anything
+      // else. The filter always resets: it is shared across repos, so repo
+      // A's query must never follow the user into repo B.
+      $listQuery.set('')
+      if (suppressRepoResetFor !== repo) { $selPr.set(null); $selIssue.set(null) }
     }
     prevRepo.current = repo
   }, [repo])
