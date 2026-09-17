@@ -1,3 +1,12 @@
 name: githermes
-version: "1.0"
+version: "0.5.0"
 description: GitHub PRs & Issues as a right workspace pane in Hermes Desktop. Data via the connected gh CLI — no backend, no tokens.
+manifest_version: 1
+requires_hermes: ">=0.21.1"
+author: claudioorjunior
+license: MIT
+homepage: https://github.com/claudioorjunior/githermes
+capabilities: []
+kind: standalone
+requires_env: []
+python_dependencies: []
