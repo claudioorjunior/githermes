@@ -250,7 +250,7 @@ const PANE_WRAP_CSS = `
 
 // Shell-quotes one argument (POSIX single quotes). Every value interpolated
 // into a gh/git command goes through this — never build a quoted string by hand.
-function sq(s) {
+export function sq(s) {
   return "'" + String(s).replace(/'/g, "'\\''") + "'"
 }
 

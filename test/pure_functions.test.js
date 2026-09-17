@@ -27,6 +27,7 @@ import {
   lookupMatchesState,
   repoOk,
   repoApiPath,
+  sq,
   isNoChecksError,
   livePollInterval,
   commentBodyOk,
@@ -798,6 +799,19 @@ test('mergeRepoOptions pins session/saved repos and dedupes case-insensitively',
   assert.deepEqual(mergeRepoOptions({ discovered: null, pinned: ['ok/repo'] }), ['ok/repo'])
   assert.deepEqual(mergeRepoOptions({}), [])
   assert.deepEqual(mergeRepoOptions({ discovered: ['nope', 'a/b'], pinned: ['a/b'] }), ['a/b'])
+})
+
+test('sq keeps hostile values inside one inert shell word', () => {
+  // Regression: the update compare once interpolated the ledger revision raw.
+  assert.equal(sq('abc1234'), "'abc1234'")
+  assert.equal(sq(''), "''")
+  assert.equal(sq(42), "'42'")
+  const hostile = "x'; touch /tmp/pwned; echo '"
+  const q = sq(hostile)
+  assert.equal(q, "'x'\\''; touch /tmp/pwned; echo '\\'''")
+  // Inside POSIX single quotes everything is literal except ' itself, so
+  // stripping the outer pair plus every escaped quote must leave none behind.
+  assert.ok(!q.slice(1, -1).replace(/'\\''/g, '').includes("'"))
 })
 
 test('parseBehindCount: numeric output is truth, anything else is not behind', () => {
