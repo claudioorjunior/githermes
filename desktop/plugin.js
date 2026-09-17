@@ -70,6 +70,10 @@ const COMMENT_MAX = 65_536
 // Lists grow by doubling --limit (gh list has no cursor); cap the ceiling so
 // busy repos can't blow the chunked shell payload.
 const LIST_LIMIT_CAP = 120
+// Paginated REST walks (comments, files) stop here so a giant thread can't
+// hang every poll. Comment callers pass direction=desc (the timeline re-sorts
+// chronologically); files keep API order.
+const PAGINATED_PAGE_CAP = 5
 
 let pluginCtx = null
 const $alwaysVisible = atom(true)
@@ -627,8 +631,16 @@ async function ghApiBig(repo, path, jq) {
 async function ghApiBigPaginated(repo, path) {
   if (!repoOk(repo)) throw new Error('invalid repo')
   // gh cannot combine --slurp with --jq, so flatten the raw page array here.
-  const pages = await shJsonBig(`${GH} api ${sq(`repos/${repoApiPath(repo)}/${path}`)} --paginate --slurp`)
-  return Array.isArray(pages) ? pages.flat() : []
+  // Capped walk instead of --paginate: a giant thread would otherwise degrade
+  // every poll linearly. Stops at PAGINATED_PAGE_CAP; an empty page ends it.
+  const sep = path.includes('?') ? '&' : '?'
+  const out = []
+  for (let page = 1; page <= PAGINATED_PAGE_CAP; page++) {
+    const items = await shJsonBig(`${GH} api ${sq(`repos/${repoApiPath(repo)}/${path}${sep}page=${page}`)}`)
+    if (!Array.isArray(items) || !items.length) break
+    out.push(...items)
+  }
+  return out
 }
 
 // Body of a `[...]` array filter — strip only the outer brackets so the
@@ -2998,11 +3010,11 @@ function PrDetail({ repo, number, onBack, active = true }) {
     enabled: !!repo && !!number && active && page === 'conversation',
     queryFn: async () => {
       const [comments, reviews, inline] = await Promise.all([
-        ghApiBigPaginatedProjected(repo, `issues/${n}/comments?per_page=100`, '[.[]|{user:.user.login,created_at,html_url,body:(.body//"")}]'),
+        ghApiBigPaginatedProjected(repo, `issues/${n}/comments?per_page=100&direction=desc`, '[.[]|{user:.user.login,created_at,html_url,body:(.body//"")}]'),
         ghApiBig(repo, `pulls/${n}/reviews`, '[.[:15][]|{user:.user.login,state,html_url,body:(.body//""),submitted_at}]'),
         // Issue #9: line-level review comments live on their own endpoint; bodies
         // and hunks are big, so same shBig routing as the rest of this query.
-        ghApiBigPaginatedProjected(repo, `pulls/${n}/comments?per_page=100`, '[.[]|{id,user:.user.login,body:(.body//""),path,line,original_line,in_reply_to_id,created_at,html_url,diff_hunk:(.diff_hunk//"")}]'),
+        ghApiBigPaginatedProjected(repo, `pulls/${n}/comments?per_page=100&direction=desc`, '[.[]|{id,user:.user.login,body:(.body//""),path,line,original_line,in_reply_to_id,created_at,html_url,diff_hunk:(.diff_hunk//"")}]'),
       ])
       return {
         comments: Array.isArray(comments) ? comments : [],
