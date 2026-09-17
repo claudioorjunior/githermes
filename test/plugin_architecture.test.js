@@ -21,6 +21,14 @@ test('Issue #27: conversation sources start together', () => {
   assert.equal((detail.match(/ghApiBig(?:PaginatedProjected)?\(repo,/g) || []).length, 6)
 })
 
+test('Paginated REST walks are capped and newest-first for comments', () => {
+  const walk = source.slice(source.indexOf('async function ghApiBigPaginated'), source.indexOf('export function projectionBody'))
+  assert.ok(!walk.includes('--paginate --slurp'), 'uncapped --paginate hangs every poll on giant threads')
+  assert.ok(walk.includes('page <= PAGINATED_PAGE_CAP'), 'walk must stop at the cap')
+  assert.ok(walk.includes('page=${page}'), 'walk must page explicitly')
+  assert.ok(source.includes('comments?per_page=100&direction=desc'), 'comments must walk newest-first so the cap keeps the latest')
+})
+
 test('Issue #34: polling is tiered, focus-aware and paused with the pane', () => {
   assert.equal((source.match(/refetchIntervalInBackground/g) || []).length, 0)
   assert.equal((source.match(/refetchOnWindowFocus: true/g) || []).length, 8)
