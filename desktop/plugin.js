@@ -871,6 +871,13 @@ export function numericListQuery(query) {
   return /^\d+$/.test(q) ? Number(q) : null
 }
 
+// Server-side lookup gate: an exact number missing from the loaded window
+// always resolves remotely, even when the window is empty (an empty "Merged"
+// tab must not read as "no such PR").
+export function isLookupMiss(allItems, exactN) {
+  return exactN != null && !allItems.some(it => it.number === exactN)
+}
+
 export function parseListQuery(query) {
   const authors = [], labels = []
   const text = String(query || '').replace(
@@ -2551,10 +2558,12 @@ function PrList({ repo, onOpen, query, active = true }) {
   })
   const allItems = Array.isArray(q.data) ? q.data : []
   const exactN = numericListQuery(query)
-  const miss = exactN != null && allItems.length > 0 && !allItems.some(it => it.number === exactN)
+  const miss = isLookupMiss(allItems, exactN)
   const lookup = useQuery({
     queryKey: [ID, 'pr-lookup', repo, exactN],
-    enabled: !!repo && miss,
+    // Defer while the list is on its initial load: q.data is [] until then,
+    // which would fire a redundant lookup the list response may already cover.
+    enabled: !!repo && miss && !q.isLoading,
     queryFn: async () => {
       try { return await fetchPrByNumber(repo, exactN) } catch { return null }
     },
@@ -2634,10 +2643,11 @@ function IssueList({ repo, onOpen, query, active = true }) {
   })
   const allItems = Array.isArray(q.data) ? q.data : []
   const exactN = numericListQuery(query)
-  const miss = exactN != null && allItems.length > 0 && !allItems.some(it => it.number === exactN)
+  const miss = isLookupMiss(allItems, exactN)
   const lookup = useQuery({
     queryKey: [ID, 'issue-lookup', repo, exactN],
-    enabled: !!repo && miss,
+    // Same initial-load deferral as the PR list above.
+    enabled: !!repo && miss && !q.isLoading,
     queryFn: async () => {
       try { return await fetchIssueByNumber(repo, exactN) } catch { return null }
     },
