@@ -1196,7 +1196,7 @@ function PluginUpdateStatus() {
       if (!revision) return { revision: null, behind: 0 }
       // A failed compare (offline, rate-limited, unresolvable revision) is
       // unknown, never "up to date" — behind: null keeps the pill neutral.
-      const ahead = await shJson(`${GH} api repos/${PLUGIN_REPO}/compare/${revision}...main --jq .ahead_by`).catch(() => null)
+      const ahead = await shJson(`${GH} api repos/${PLUGIN_REPO}/compare/${sq(revision)}...main --jq .ahead_by`).catch(() => null)
       return { revision, behind: ahead == null ? null : parseBehindCount(ahead) }
     },
   })
