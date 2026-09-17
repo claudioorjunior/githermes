@@ -799,6 +799,28 @@ test('mergeRepoOptions pins session/saved repos and dedupes case-insensitively',
   assert.deepEqual(mergeRepoOptions({ discovered: ['nope', 'a/b'], pinned: ['a/b'] }), ['a/b'])
 })
 
+test('Repo picker drag order: user order wins and outlives the discovery window', () => {
+  // Dragged order first, pinned follows, rest stays alphabetical.
+  assert.deepEqual(
+    mergeRepoOptions({
+      discovered: ['zeta/app', 'acme/app'],
+      pinned: ['acme/app'],
+      ordered: ['zeta/app', 'acme/app'],
+    }),
+    ['zeta/app', 'acme/app'],
+  )
+  // A dragged repo gh no longer returns stays selectable (#56 rationale).
+  assert.deepEqual(
+    mergeRepoOptions({ discovered: ['a/one'], pinned: [], ordered: ['gone/repo', 'a/one'] }),
+    ['gone/repo', 'a/one'],
+  )
+  // Ordered never dethrones itself by case variants; invalid entries skip.
+  assert.deepEqual(
+    mergeRepoOptions({ discovered: ['b/two'], pinned: [], ordered: ['B/TWO', 'bad'] }),
+    ['B/TWO'],
+  )
+})
+
 // Issue #57: one table covers gh failure classification.
 test('classifyGhError maps known CLI failures to recovery kinds', () => {
   const cases = [
