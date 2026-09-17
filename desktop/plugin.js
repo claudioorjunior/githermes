@@ -53,6 +53,11 @@ const ROUTES_AREA_LIT = 'routes'
 const SIDEBAR_NAV_LIT = 'sidebar.nav'
 const TRUNK = new Set(['main', 'master', 'dev', 'develop', 'trunk'])
 const GH = 'PATH=/opt/homebrew/bin:/usr/local/bin:$PATH gh'
+const HERMES = 'PATH=/opt/homebrew/bin:/usr/local/bin:$PATH hermes'
+const PLUGIN_NAME = 'githermes'
+// $HERMES_HOME is expanded by the backend shell (profile-aware); double quotes
+// keep it a single word while still letting the env var through.
+const PLUGIN_LEDGER_PATH = '${HERMES_HOME}/plugins/.install-metadata.json'
 const PR_URL = /https?:\/\/github\.com\/([^/\s]+)\/([^/\s#?]+)\/pull\/(\d+)/i
 const FAST_POLL_MS = 10_000
 const MEDIUM_POLL_MS = 30_000
@@ -993,6 +998,13 @@ function useRepos() {
   })
 }
 
+// Behind count only changes after new data arrives, so the updater polls.
+// Non-numeric output (missing compare, no revision) means "not behind".
+export function parseBehindCount(raw) {
+  const s = String(raw ?? '').trim()
+  return /^\d+$/.test(s) ? Number(s) : 0
+}
+
 function useSessionGit(cwd) {
   return useQuery({
     queryKey: [ID, 'session-git', cwd],
@@ -1132,6 +1144,72 @@ function SessionPrStatus() {
       children: [
         jsx(StateDot, { state: pr.state, isDraft: pr.isDraft }),
         jsx('span', { className: 'truncate font-medium tabular-nums', children: `#${pr.number} ${pr.title || ''}` }),
+      ],
+    }),
+  })
+}
+
+// Self-updater, mirroring the desktop's version status: the installed revision
+// comes from the plugin install ledger ($HERMES_HOME, expanded by the backend
+// shell), the behind count from a GitHub compare (installs are shallow clones,
+// so local rev-list would miscount), and the update button runs the same CLI
+// users would. Null when githermes is not an installed package (dev symlinks)
+// — those update through git itself.
+const PLUGIN_REPO = 'claudioorjunior/githermes'
+function PluginUpdateStatus() {
+  const [updating, setUpdating] = useState(false)
+  const [error, setError] = useState('')
+  const q = useQuery({
+    queryKey: [ID, 'plugin-update'],
+    refetchInterval: MEDIUM_POLL_MS,
+    staleTime: 15_000,
+    queryFn: async () => {
+      const meta = await sh(`cat "${PLUGIN_LEDGER_PATH}"`).catch(() => '')
+      let entry = null
+      try { entry = JSON.parse(meta)[PLUGIN_NAME] } catch { entry = null }
+      const revision = typeof entry?.revision === 'string' ? entry.revision : null
+      if (!revision) return { revision: null, behind: 0 }
+      const ahead = await shJson(`${GH} api repos/${PLUGIN_REPO}/compare/${revision}...main --jq .ahead_by`).catch(() => '0')
+      return { revision, behind: parseBehindCount(ahead) }
+    },
+  })
+  const { revision, behind } = q.data || {}
+  if (!revision) return null
+
+  const update = async () => {
+    if (updating) return
+    setUpdating(true)
+    setError('')
+    try {
+      await sh(`${HERMES} plugins update ${PLUGIN_NAME}`)
+      queryClient.invalidateQueries({ queryKey: [ID, 'plugin-update'] })
+    } catch (e) {
+      setError(String(e?.message || e).slice(0, 120))
+    } finally {
+      setUpdating(false)
+    }
+  }
+
+  const unit = behind === 1 ? 'commit' : 'commits'
+  const sha7 = String(revision).slice(0, 7)
+  return jsx(Tip, {
+    label: behind > 0
+      ? `githermes @${sha7} — ${behind} new ${unit} on main, click to update`
+      : `githermes @${sha7} — up to date`,
+    children: jsxs('button', {
+      type: 'button',
+      onClick: update,
+      'aria-label': behind > 0 ? `Update githermes (${behind} new ${unit})` : `githermes ${sha7}`,
+      className: 'inline-flex h-full min-w-0 items-center gap-1 px-1.5 text-[0.6875rem] text-(--ui-text-tertiary) hover:text-(--ui-text-primary)',
+      children: [
+        jsx(Codicon, { name: 'package', size: 12, className: 'shrink-0' + (behind > 0 ? ' text-(--ui-yellow)' : '') }),
+        jsx('span', { className: 'truncate tabular-nums', children: `githermes @${sha7}` }),
+        behind > 0
+          ? updating
+            ? jsx(GlyphSpinner, {})
+            : jsxs('span', { className: 'text-(--ui-yellow) tabular-nums', children: [`(+${behind})`] })
+          : null,
+        error ? jsx('span', { className: 'truncate text-(--ui-red)', children: error }) : null,
       ],
     }),
   })
@@ -3360,5 +3438,6 @@ export default {
     ctx.register({ id: 'titlebar-github', area: TITLEBAR_AREAS.right, order: 20, render: () => jsx(TitlebarGithubButton, {}) })
     ctx.register({ id: 'statusbar-session-branch', area: STATUSBAR_AREAS.right, order: 84, render: () => jsx(SessionBranchStatus, {}) })
     ctx.register({ id: 'statusbar-session-pr', area: STATUSBAR_AREAS.right, order: 85, render: () => jsx(SessionPrStatus, {}) })
+    ctx.register({ id: 'statusbar-plugin-update', area: STATUSBAR_AREAS.right, order: 86, render: () => jsx(PluginUpdateStatus, {}) })
   },
 }

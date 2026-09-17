@@ -47,6 +47,7 @@ import {
   updateBotAssignment,
   formatAskHermesPrompt,
   mergeRepoOptions,
+  parseBehindCount,
   classifyGhError,
 } from '../desktop/plugin.js'
 
@@ -797,6 +798,16 @@ test('mergeRepoOptions pins session/saved repos and dedupes case-insensitively',
   assert.deepEqual(mergeRepoOptions({ discovered: null, pinned: ['ok/repo'] }), ['ok/repo'])
   assert.deepEqual(mergeRepoOptions({}), [])
   assert.deepEqual(mergeRepoOptions({ discovered: ['nope', 'a/b'], pinned: ['a/b'] }), ['a/b'])
+})
+
+test('parseBehindCount: numeric output is truth, anything else is not behind', () => {
+  assert.equal(parseBehindCount('12'), 12)
+  assert.equal(parseBehindCount('  3\n'), 3)
+  assert.equal(parseBehindCount('0'), 0)
+  // gh compare failure / missing revision must never read as "behind".
+  assert.equal(parseBehindCount(''), 0)
+  assert.equal(parseBehindCount(undefined), 0)
+  assert.equal(parseBehindCount('{"message": "Not Found"}'), 0)
 })
 
 // Issue #57: one table covers gh failure classification.
