@@ -55,8 +55,15 @@ const GITHUB_ROUTE = '/github'
 const ROUTES_AREA_LIT = 'routes'
 const SIDEBAR_NAV_LIT = 'sidebar.nav'
 const TRUNK = new Set(['main', 'master', 'dev', 'develop', 'trunk'])
-const GH = 'PATH=/opt/homebrew/bin:/usr/local/bin:$PATH gh'
-const HERMES = 'PATH=/opt/homebrew/bin:/usr/local/bin:$PATH hermes'
+// POSIX PATH prefix so `gh` resolves under macOS/Linux shells that don't
+// inherit the user's login PATH (Homebrew, /usr/local). Windows runs
+// shell.exec through cmd.exe, where a leading `PATH=... cmd` assignment is
+// parsed as a VARIABLE NAMES command and the binary never runs — it exits 0
+// with empty stdout. Detect the shell and only prefix where it is valid.
+const POSIX_SHELL = typeof navigator === 'undefined' || !/win/i.test(navigator.platform || navigator.userAgent || '')
+const POSIX_PATH = 'PATH=/opt/homebrew/bin:/usr/local/bin:$PATH '
+const GH = `${POSIX_SHELL ? POSIX_PATH : ''}gh`
+const HERMES = `${POSIX_SHELL ? POSIX_PATH : ''}hermes`
 const PLUGIN_NAME = 'githermes'
 // $HERMES_HOME is expanded by the backend shell (profile-aware); double quotes
 // keep it a single word while still letting the env var through.
@@ -480,8 +487,41 @@ function sendCommentToChat(c) {
   insertComposerText(commentToChatText(c))
 }
 
+// `shell.exec` runs through cmd.exe on Windows, where the plugin's POSIX
+// toolbox (base64, wc, tail, printf, unlink) and `/tmp` do not exist — every
+// big-payload read and the comment composer would fail. Route the command
+// through Git for Windows' bash so one command string works on all platforms.
+// The POSIX PATH prefix above stays a no-op under bash; on Windows it is
+// dropped because cmd.exe would swallow the binary name.
+//
+// `bash` on PATH is NOT safe to assume: Windows ships WSL's bash.exe in
+// System32, which would run the command against a different filesystem (and
+// no `gh`). Derive bash from the resolved `git` install instead.
+let bashPath = null
+const shCmd = cmd => (POSIX_SHELL ? cmd : `${bashPath ?? 'bash'} -lc ${JSON.stringify(cmd)}`)
+
+/** Resolve Git for Windows' bash once. No-op on POSIX, where commands run as-is. */
+async function resolveBash() {
+  if (POSIX_SHELL) return
+  try {
+    const r = await host.request('shell.exec', { command: 'where git' })
+    const git = (r.stdout || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean)[0]
+    if (!git) return
+    // <root>\cmd\git.exe | <root>\mingw64\bin\git.exe -> <root>\bin\bash.exe
+    const m = git.match(/^(.*?)[\\/](?:cmd|mingw64[\\/]bin|usr[\\/]bin)[\\/][^\\/]+$/i)
+    const root = m ? m[1] : git.replace(/[\\/][^\\/]+$/, '')
+    for (const candidate of [`${root}\\bin\\bash.exe`, `${root}\\usr\\bin\\bash.exe`]) {
+      const probe = await host.request('shell.exec', { command: `if exist "${candidate}" echo FOUND` })
+      if ((probe.stdout || '').includes('FOUND')) {
+        bashPath = `"${candidate}"`
+        return
+      }
+    }
+  } catch { /* keep the bare-bash fallback */ }
+}
+
 async function sh(cmd) {
-  const r = await host.request('shell.exec', { command: cmd })
+  const r = await host.request('shell.exec', { command: shCmd(cmd) })
   if (r.code !== 0) throw new Error((r.stderr || r.stdout || `exit ${r.code}`).trim().slice(0, 600))
   return (r.stdout || '').trim()
 }
@@ -709,7 +749,7 @@ async function fetchIssueByNumber(repo, n) {
 }
 
 async function shJsonLoose(cmd) {
-  const r = await host.request('shell.exec', { command: cmd })
+  const r = await host.request('shell.exec', { command: shCmd(cmd) })
   const out = (r.stdout || '').trim()
   if (!out) {
     if (r.code !== 0) throw new Error((r.stderr || `exit ${r.code}`).trim().slice(0, 400))
@@ -3525,6 +3565,9 @@ export default {
   name: 'GitHermes',
   register(ctx) {
     pluginCtx = ctx
+    // Resolve Git for Windows' bash before the first command goes out; a no-op
+    // on POSIX. Fire-and-forget: `shCmd` falls back to bare `bash` until it lands.
+    resolveBash()
     const saved = ctx.storage.get('repo')
     if (saved) $repo.set(saved)
     const assignments = ctx.storage.get('botAssignments', {})
