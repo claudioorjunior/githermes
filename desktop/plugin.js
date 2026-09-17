@@ -660,12 +660,13 @@ export function projectIssueComments(items) {
   }))
 }
 
-async function ghApiBigPaginatedProjected(repo, path, jq) {
-  const items = await ghApiBigPaginated(repo, path)
+// Pure dispatch behind ghApiBigPaginatedProjected: marker priority is
+// diff_hunk (inline) > html_url (issue comments) > patch (files); unknown
+// projections fall back to raw items. Tested directly — this router is what
+// keeps full REST user objects out of the render tree (React #31).
+export function projectPaginatedItems(items, jq) {
   if (!jq || !items.length) return items
-  // Project in JS, not `jq`: the binary may be absent and a large printf arg overflows argv.
   const proj = projectionBody(jq)
-  // Recognize the two projections used by this plugin; fall back to raw items.
   if (proj.includes('diff_hunk')) {
     return projectInlineComments(items)
   }
@@ -679,6 +680,12 @@ async function ghApiBigPaginatedProjected(repo, path, jq) {
     }))
   }
   return items
+}
+
+async function ghApiBigPaginatedProjected(repo, path, jq) {
+  const items = await ghApiBigPaginated(repo, path)
+  // Project in JS, not `jq`: the binary may be absent and a large printf arg overflows argv.
+  return projectPaginatedItems(items, jq)
 }
 
 async function fetchPrByNumber(repo, n) {
