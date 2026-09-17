@@ -1194,8 +1194,10 @@ function PluginUpdateStatus() {
       try { entry = JSON.parse(meta)[PLUGIN_NAME] } catch { entry = null }
       const revision = typeof entry?.revision === 'string' ? entry.revision : null
       if (!revision) return { revision: null, behind: 0 }
-      const ahead = await shJson(`${GH} api repos/${PLUGIN_REPO}/compare/${revision}...main --jq .ahead_by`).catch(() => '0')
-      return { revision, behind: parseBehindCount(ahead) }
+      // A failed compare (offline, rate-limited, unresolvable revision) is
+      // unknown, never "up to date" — behind: null keeps the pill neutral.
+      const ahead = await shJson(`${GH} api repos/${PLUGIN_REPO}/compare/${revision}...main --jq .ahead_by`).catch(() => null)
+      return { revision, behind: ahead == null ? null : parseBehindCount(ahead) }
     },
   })
   const { revision, behind } = q.data || {}
@@ -1220,7 +1222,9 @@ function PluginUpdateStatus() {
   return jsx(Tip, {
     label: behind > 0
       ? `githermes @${sha7} — ${behind} new ${unit} on main, click to update`
-      : `githermes @${sha7} — up to date`,
+      : behind == null
+        ? `githermes @${sha7} — could not check for updates`
+        : `githermes @${sha7} — up to date`,
     children: jsxs('button', {
       type: 'button',
       onClick: update,

@@ -253,6 +253,7 @@ test('Self-updater shows the installed revision and a one-click update', () => {
   // Behind: GitHub compare (shallow installs cannot rev-list), parsed safely.
   assert.ok(upd.includes('compare/${revision}...main --jq .ahead_by'), 'behind must come from the GitHub compare')
   assert.ok(upd.includes('parseBehindCount(ahead)'), 'count must go through the tested parser')
+  assert.ok(upd.includes('behind: ahead == null ? null : parseBehindCount(ahead)'), 'a failed compare is unknown, never "up to date"')
   assert.ok(upd.includes('if (!revision) return null'), 'no footprint when not an installed package')
   // Update: same CLI users run; single-flight; refreshes its own state.
   assert.ok(upd.includes('plugins update ${PLUGIN_NAME}'), 'click must run the plugin update CLI')
