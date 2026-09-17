@@ -193,6 +193,7 @@ test('Issue #55: lists cap explicitly and load more on demand', () => {
     assert.ok(list.includes('placeholderData: (prev) => prev'), `${name}: growth must hold rows`)
     assert.ok(list.includes('ListMoreFooter({ q, limit, setLimit, allItems })'), `${name}: footer not wired`)
     assert.ok(list.includes('q.isError && !allItems.length'), `${name}: refetch failure must keep rows`)
+    assert.ok(list.includes('isLookupMiss(allItems, exactN)'), `${name}: exact-number lookup must not depend on a non-empty window`)
   }
 })
 

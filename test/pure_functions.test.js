@@ -23,6 +23,7 @@ import {
   projectionBody,
   projectInlineComments,
   numericListQuery,
+  isLookupMiss,
   isLongBody,
   lookupMatchesState,
   repoOk,
@@ -370,6 +371,15 @@ test('numericListQuery detects exact-number searches for server-side lookup', ()
   assert.equal(numericListQuery('#42x'), null)
   assert.equal(numericListQuery(''), null)
   assert.equal(numericListQuery(null), null)
+})
+
+test('isLookupMiss resolves exact numbers even from an empty window', () => {
+  // An empty "Merged" tab must still look #42 up server-side.
+  assert.equal(isLookupMiss([], 42), true)
+  assert.equal(isLookupMiss([{ number: 7 }], 42), true)
+  assert.equal(isLookupMiss([{ number: 42 }], 42), false)
+  assert.equal(isLookupMiss([], null), false)
+  assert.equal(isLookupMiss([{ number: 42 }], null), false)
 })
 
 test('isLongBody collapses comments over the line/char thresholds', () => {
