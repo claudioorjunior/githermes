@@ -23,9 +23,15 @@ test('shell: every shell.exec goes through the shCmd wrapper', () => {
   // A raw `host.request('shell.exec', { command: cmd })` call site bypasses the
   // Windows bash hop and reintroduces the cmd.exe bug for that one query.
   const calls = source.match(/host\.request\('shell\.exec', \{ command: [^}]*\}/g) || []
-  assert.ok(calls.length >= 4, 'expected the wrapper plus the two bash probes')
+  assert.ok(calls.length >= 4, 'expected the wrapper, the bash probes and the shim writers')
   for (const call of calls) {
-    const ok = call.includes('shellCommand(') || call.includes("'where git'") || call.includes('if exist')
+    const ok =
+      call.includes('shellCommand(') ||
+      call.includes("'where git'") ||
+      call.includes('if exist') ||
+      call.includes('if not exist') ||
+      call.includes('SHIM_SCRIPT') ||
+      call.includes('SHIM_RUNNER')
     assert.ok(ok, `unwrapped shell.exec call site: ${call}`)
   }
 })
