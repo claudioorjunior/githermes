@@ -36,7 +36,7 @@ test('shell: Windows routes through Git bash, not WSL bash', () => {
   // installed Git instead of trusting PATH.
   assert.ok(source.includes('function resolveBash'), 'resolveBash is missing')
   assert.ok(source.includes('command: \'where git\''), 'bash must be derived from the git install')
-  assert.ok(source.includes("git.replaceAll('\\\\\\\\', '/')"), 'Windows paths must be normalized before parsing')
+  assert.ok(source.includes("git.replace(/\\\\/g, '/')"), 'Windows paths must be normalized before parsing')
   assert.ok(source.includes('(?:cmd|mingw64\\/bin|usr\\/bin)'), 'all Git-for-Windows install layouts must resolve')
   assert.ok(source.includes('bin\\\\bash.exe'), 'expected Git-for-Windows bash candidates')
   assert.ok(!/const BASH = '[A-Z]:/.test(source), 'bash path must not be hardcoded to a drive letter')

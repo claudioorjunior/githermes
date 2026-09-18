@@ -510,7 +510,7 @@ function resolveBash() {
       const r = await host.request('shell.exec', { command: 'where git' })
       const git = (r.stdout || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean)[0]
       if (!git) return
-      const normalizedGit = git.replaceAll('\\\\', '/')
+      const normalizedGit = git.replace(/\\/g, '/')
       // <root>/cmd/git.exe | <root>/mingw64/bin/git.exe -> <root>/bin/bash.exe
       const m = normalizedGit.match(/^(.*)\/(?:cmd|mingw64\/bin|usr\/bin)\/[^/]+$/i)
       const root = m ? m[1] : normalizedGit.replace(/\/[^/]+$/, '')
