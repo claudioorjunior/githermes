@@ -1071,6 +1071,45 @@ export function parseBehindCount(raw) {
   return /^\d+$/.test(s) ? Number(s) : 0
 }
 
+// Catalog pin: the SHA `hermes plugins update` delivers for a catalog
+// install (re-pin, never git pull). Only a full 40-hex SHA from our own
+// entry counts — anything else falls back to the main compare.
+export function parseCatalogPin(searchJson, repo) {
+  const rows = Array.isArray(searchJson?.results) ? searchJson.results : []
+  const entry = rows.find(r => r?.name === PLUGIN_NAME && r?.repo === `https://github.com/${repo}`)
+  const sha = typeof entry?.sha === 'string' ? entry.sha.trim() : ''
+  return /^[0-9a-f]{40}$/.test(sha) ? sha : null
+}
+
+// Pin-vs-revision verdict from one compare payload. A catalog rollback
+// (pin older than the install) reads ahead_by 0 with SHAs different — that
+// is not "up to date", the update would re-pin backward, so it surfaces as
+// a rollback instead of a silent green.
+export function resolvePinBehind(revision, pin, cmp) {
+  if (!pin || pin === revision) return { behind: 0, rollback: false }
+  if (cmp == null) return { behind: null, rollback: false }
+  const ahead = parseBehindCount(cmp.ahead)
+  const back = parseBehindCount(cmp.behind)
+  if (ahead > 0) return { behind: ahead, rollback: false }
+  if (back > 0) return { behind: 0, rollback: true }
+  return { behind: 0, rollback: false }
+}
+
+// The pin moves on catalog bumps (rare), so cache it well past the poll.
+// Failures stay uncached and retry on the next tick.
+const CATALOG_PIN_TTL_MS = 3_600_000
+const catalogPin = { at: 0, sha: null }
+async function getCatalogPin() {
+  if (Date.now() - catalogPin.at < CATALOG_PIN_TTL_MS && catalogPin.sha) return catalogPin.sha
+  const pin = await shJson(`${HERMES} plugins search ${PLUGIN_NAME} --json`).then(
+    out => parseCatalogPin(out, PLUGIN_REPO), () => null)
+  if (pin) {
+    catalogPin.at = Date.now()
+    catalogPin.sha = pin
+  }
+  return pin
+}
+
 function useSessionGit(cwd) {
   return useQuery({
     queryKey: [ID, 'session-git', cwd],
@@ -1232,13 +1271,23 @@ function PluginUpdateStatus() {
       try { entry = JSON.parse(meta)[PLUGIN_NAME] } catch { entry = null }
       const revision = typeof entry?.revision === 'string' ? entry.revision : null
       if (!revision) return { revision: null, behind: 0 }
+      const pin = await getCatalogPin()
+      if (pin) {
+        // Catalog install: the update delivers the pin, so judge against it.
+        // No compare call at all when already there — the common case.
+        // Braces quoted via sq(): the jq object holds a comma, which bash
+        // would otherwise brace-expand.
+        const cmp = pin === revision ? null : await shJson(
+          `${GH} api repos/${PLUGIN_REPO}/compare/${sq(revision)}...${sq(pin)} --jq ${sq('{ahead: .ahead_by, behind: .behind_by}')}`).catch(() => null)
+        return { revision, ...resolvePinBehind(revision, pin, cmp), basis: 'pin' }
+      }
       // A failed compare (offline, rate-limited, unresolvable revision) is
       // unknown, never "up to date" — behind: null keeps the pill neutral.
       const ahead = await shJson(`${GH} api repos/${PLUGIN_REPO}/compare/${sq(revision)}...main --jq .ahead_by`).catch(() => null)
-      return { revision, behind: ahead == null ? null : parseBehindCount(ahead) }
+      return { revision, behind: ahead == null ? null : parseBehindCount(ahead), basis: 'main' }
     },
   })
-  const { revision, behind } = q.data || {}
+  const { revision, behind, basis, rollback } = q.data || {}
   if (!revision) return null
 
   const update = async () => {
@@ -1247,6 +1296,7 @@ function PluginUpdateStatus() {
     setError('')
     try {
       await sh(`${HERMES} plugins update ${PLUGIN_NAME}`)
+      catalogPin.at = 0 // re-resolve the pin; a bump may have just landed
       queryClient.invalidateQueries({ queryKey: [ID, 'plugin-update'] })
     } catch (e) {
       setError(String(e?.message || e).slice(0, 120))
@@ -1257,19 +1307,23 @@ function PluginUpdateStatus() {
 
   const unit = behind === 1 ? 'commit' : 'commits'
   const sha7 = String(revision).slice(0, 7)
+  const where = basis === 'pin' ? 'in catalog' : 'on main'
+  const needsUpdate = behind > 0 || rollback
   return jsx(Tip, {
     label: behind > 0
-      ? `githermes @${sha7} — ${behind} new ${unit} on main, click to update`
-      : behind == null
-        ? `githermes @${sha7} — could not check for updates`
-        : `githermes @${sha7} — up to date`,
+      ? `githermes @${sha7} — ${behind} new ${unit} ${where}, click to update`
+      : rollback
+        ? `githermes @${sha7} — ahead of catalog pin, click to re-sync`
+        : behind == null
+          ? `githermes @${sha7} — could not check for updates`
+          : `githermes @${sha7} — up to date`,
     children: jsxs('button', {
       type: 'button',
       onClick: update,
-      'aria-label': behind > 0 ? `Update githermes (${behind} new ${unit})` : `githermes ${sha7}`,
+      'aria-label': behind > 0 ? `Update githermes (${behind} new ${unit})` : rollback ? 'Update githermes (re-sync to catalog pin)' : `githermes ${sha7}`,
       className: 'inline-flex h-full min-w-0 items-center gap-1 px-1.5 text-[0.6875rem] text-(--ui-text-tertiary) hover:text-(--ui-text-primary)',
       children: [
-        jsx(Codicon, { name: 'package', size: 12, className: 'shrink-0' + (behind > 0 ? ' text-(--ui-yellow)' : '') }),
+        jsx(Codicon, { name: 'package', size: 12, className: 'shrink-0' + (needsUpdate ? ' text-(--ui-yellow)' : '') }),
         jsx('span', { className: 'truncate tabular-nums', children: `githermes @${sha7}` }),
         behind > 0
           ? updating
