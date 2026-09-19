@@ -51,6 +51,7 @@ import {
   formatAskHermesPrompt,
   mergeRepoOptions,
   parseBehindCount,
+  parseCatalogPin,
   classifyGhError,
 } from '../desktop/plugin.js'
 
@@ -865,6 +866,17 @@ test('parseBehindCount: numeric output is truth, anything else is not behind', (
   assert.equal(parseBehindCount(''), 0)
   assert.equal(parseBehindCount(undefined), 0)
   assert.equal(parseBehindCount('{"message": "Not Found"}'), 0)
+})
+
+test('parseCatalogPin: only our own entry with a full SHA counts', () => {
+  const sha = '09d5b566da650290dc0d639ea1e77def4bcdab31'
+  const good = { results: [{ name: 'githermes', repo: 'https://github.com/claudioorjunior/githermes', sha }] }
+  assert.equal(parseCatalogPin(good, 'claudioorjunior/githermes'), sha)
+  // Wrong repo, short SHA, missing shape: all fall back to the main compare.
+  assert.equal(parseCatalogPin({ results: [{ name: 'githermes', repo: 'https://github.com/evil/fork', sha }] }, 'claudioorjunior/githermes'), null)
+  assert.equal(parseCatalogPin({ results: [{ name: 'githermes', repo: 'https://github.com/claudioorjunior/githermes', sha: '09d5b56' }] }, 'claudioorjunior/githermes'), null)
+  assert.equal(parseCatalogPin({ results: [] }, 'claudioorjunior/githermes'), null)
+  assert.equal(parseCatalogPin(null, 'claudioorjunior/githermes'), null)
 })
 
 test('Repo picker drag order: user order wins and outlives the discovery window', () => {

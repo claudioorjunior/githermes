@@ -1071,6 +1071,31 @@ export function parseBehindCount(raw) {
   return /^\d+$/.test(s) ? Number(s) : 0
 }
 
+// Catalog pin: the SHA `hermes plugins update` delivers for a catalog
+// install (re-pin, never git pull). Only a full 40-hex SHA from our own
+// entry counts — anything else falls back to the main compare.
+export function parseCatalogPin(searchJson, repo) {
+  const rows = Array.isArray(searchJson?.results) ? searchJson.results : []
+  const entry = rows.find(r => r?.name === PLUGIN_NAME && r?.repo === `https://github.com/${repo}`)
+  const sha = typeof entry?.sha === 'string' ? entry.sha.trim() : ''
+  return /^[0-9a-f]{40}$/.test(sha) ? sha : null
+}
+
+// The pin moves on catalog bumps (rare), so cache it well past the poll.
+// Failures stay uncached and retry on the next tick.
+const CATALOG_PIN_TTL_MS = 3_600_000
+const catalogPin = { at: 0, sha: null }
+async function getCatalogPin() {
+  if (Date.now() - catalogPin.at < CATALOG_PIN_TTL_MS && catalogPin.sha) return catalogPin.sha
+  const pin = await shJson(`${HERMES} plugins search ${PLUGIN_NAME} --json`).then(
+    out => parseCatalogPin(out, PLUGIN_REPO), () => null)
+  if (pin) {
+    catalogPin.at = Date.now()
+    catalogPin.sha = pin
+  }
+  return pin
+}
+
 function useSessionGit(cwd) {
   return useQuery({
     queryKey: [ID, 'session-git', cwd],
@@ -1232,13 +1257,21 @@ function PluginUpdateStatus() {
       try { entry = JSON.parse(meta)[PLUGIN_NAME] } catch { entry = null }
       const revision = typeof entry?.revision === 'string' ? entry.revision : null
       if (!revision) return { revision: null, behind: 0 }
+      const pin = await getCatalogPin()
+      if (pin) {
+        // Catalog install: the update delivers the pin, so count against it.
+        // No compare call at all when already there — the common case.
+        if (pin === revision) return { revision, behind: 0, basis: 'pin' }
+        const ahead = await shJson(`${GH} api repos/${PLUGIN_REPO}/compare/${sq(revision)}...${sq(pin)} --jq .ahead_by`).catch(() => null)
+        return { revision, behind: ahead == null ? null : parseBehindCount(ahead), basis: 'pin' }
+      }
       // A failed compare (offline, rate-limited, unresolvable revision) is
       // unknown, never "up to date" — behind: null keeps the pill neutral.
       const ahead = await shJson(`${GH} api repos/${PLUGIN_REPO}/compare/${sq(revision)}...main --jq .ahead_by`).catch(() => null)
-      return { revision, behind: ahead == null ? null : parseBehindCount(ahead) }
+      return { revision, behind: ahead == null ? null : parseBehindCount(ahead), basis: 'main' }
     },
   })
-  const { revision, behind } = q.data || {}
+  const { revision, behind, basis } = q.data || {}
   if (!revision) return null
 
   const update = async () => {
@@ -1247,6 +1280,7 @@ function PluginUpdateStatus() {
     setError('')
     try {
       await sh(`${HERMES} plugins update ${PLUGIN_NAME}`)
+      catalogPin.at = 0 // re-resolve the pin; a bump may have just landed
       queryClient.invalidateQueries({ queryKey: [ID, 'plugin-update'] })
     } catch (e) {
       setError(String(e?.message || e).slice(0, 120))
@@ -1257,9 +1291,10 @@ function PluginUpdateStatus() {
 
   const unit = behind === 1 ? 'commit' : 'commits'
   const sha7 = String(revision).slice(0, 7)
+  const where = basis === 'pin' ? 'in catalog' : 'on main'
   return jsx(Tip, {
     label: behind > 0
-      ? `githermes @${sha7} — ${behind} new ${unit} on main, click to update`
+      ? `githermes @${sha7} — ${behind} new ${unit} ${where}, click to update`
       : behind == null
         ? `githermes @${sha7} — could not check for updates`
         : `githermes @${sha7} — up to date`,
