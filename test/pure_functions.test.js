@@ -52,6 +52,7 @@ import {
   mergeRepoOptions,
   parseBehindCount,
   parseCatalogPin,
+  resolvePinBehind,
   classifyGhError,
 } from '../desktop/plugin.js'
 
@@ -877,6 +878,22 @@ test('parseCatalogPin: only our own entry with a full SHA counts', () => {
   assert.equal(parseCatalogPin({ results: [{ name: 'githermes', repo: 'https://github.com/claudioorjunior/githermes', sha: '09d5b56' }] }, 'claudioorjunior/githermes'), null)
   assert.equal(parseCatalogPin({ results: [] }, 'claudioorjunior/githermes'), null)
   assert.equal(parseCatalogPin(null, 'claudioorjunior/githermes'), null)
+})
+
+test('resolvePinBehind: rollback is not "up to date"', () => {
+  const rev = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  const pin = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+  // At the pin: no compare needed, clean.
+  assert.deepEqual(resolvePinBehind(pin, pin, null), { behind: 0, rollback: false })
+  // Pin ahead: the update delivers exactly the ahead count.
+  assert.deepEqual(resolvePinBehind(rev, pin, { ahead: 3, behind: 0 }), { behind: 3, rollback: false })
+  // Catalog rollback: ahead 0 with different SHAs means the install is
+  // newer than the pin, and the update would re-pin backward.
+  assert.deepEqual(resolvePinBehind(rev, pin, { ahead: 0, behind: 2 }), { behind: 0, rollback: true })
+  // Failed compare stays unknown, never green.
+  assert.deepEqual(resolvePinBehind(rev, pin, null), { behind: null, rollback: false })
+  // No pin (standalone install): caller falls back to the main compare.
+  assert.deepEqual(resolvePinBehind(rev, null, null), { behind: 0, rollback: false })
 })
 
 test('Repo picker drag order: user order wins and outlives the discovery window', () => {
