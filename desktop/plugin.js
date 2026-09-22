@@ -545,8 +545,9 @@ async function shellCommand(cmd) {
   // login shell's PATH.
   const b64 = utf8ToB64(cmd)
   // ponytail: cmd.exe /c caps the command line at 8191 chars and b64 inflates 4/3;
-  // past this a command must ride shBig's chunked file route instead.
-  if (b64.length > 6000) throw new Error(`command too long for cmd.exe (${b64.length} b64 chars); route it through shBig`)
+  // past this the caller must split the command. shBig is not the escape hatch:
+  // it routes back through sh/shellCommand and would throw the same guard.
+  if (b64.length > 6000) throw new Error(`command too long for cmd.exe (${b64.length} b64 chars); split it into smaller commands`)
   return `"${bashPath}" -l -c "echo ${b64} | tr -d '\\r\\n' | base64 -d > /tmp/gt$$.sh; bash /tmp/gt$$.sh; e=$?; unlink /tmp/gt$$.sh; exit $e"`
 }
 
