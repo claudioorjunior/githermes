@@ -19,21 +19,25 @@ test('shell: every gh/hermes invocation resolves the binary per platform', () =>
   assert.ok(source.includes('${POSIX_SHELL ? POSIX_PATH : \'\'}hermes'), 'HERMES must be platform-gated')
 })
 
-test('shell: every shell.exec goes through the shCmd wrapper', () => {
+test('shell: every shell.exec goes through the shellCommand wrapper', () => {
   // A raw `host.request('shell.exec', { command: cmd })` call site bypasses the
   // Windows bash hop and reintroduces the cmd.exe bug for that one query.
   const calls = source.match(/host\.request\('shell\.exec', \{ command: [^}]*\}/g) || []
-  assert.ok(calls.length >= 4, 'expected the wrapper, the bash probes and the shim writers')
+  assert.ok(calls.length >= 4, 'expected the wrapper callers, the where-git probe and the bash probe')
   for (const call of calls) {
     const ok =
       call.includes('shellCommand(') ||
       call.includes("'where git'") ||
-      call.includes('if exist') ||
-      call.includes('if not exist') ||
-      call.includes('SHIM_SCRIPT') ||
-      call.includes('SHIM_RUNNER')
+      call.includes('if exist')
     assert.ok(ok, `unwrapped shell.exec call site: ${call}`)
   }
+  // cmd.exe parses the whole command string (no \" handling; |>&^% are live), so user
+  // text may only cross it as base64; bash decodes to a $$-unique script and runs it.
+  assert.ok(!source.includes('echo ${cmd}'), 'raw command text must not cross cmd.exe')
+  assert.ok(
+    source.includes('| base64 -d > /tmp/gt$$.sh; bash /tmp/gt$$.sh; e=$?; unlink /tmp/gt$$.sh; exit $e'),
+    'Windows commands must decode from base64 inside bash with per-invocation state',
+  )
 })
 
 test('shell: Windows routes through Git bash, not WSL bash', () => {
