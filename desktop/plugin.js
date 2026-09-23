@@ -644,8 +644,11 @@ async function ghApi(repo, path, jq) {
 
 // shell.exec returns only the LAST 4000 chars of stdout (gateway cap), so big
 // payloads (full comment bodies) can't come back in one call. Route them through
-// a temp file read back in base64 chunks — base64 is pure ASCII, so a chunk
-// boundary can never split a multi-byte char the way raw-byte chunking would.
+// a temp file read back in hex chunks — hex is pure ASCII, so a chunk boundary
+// can never split a multi-byte char the way raw-byte chunking would. Not base64:
+// the gateway redacts shell.exec stdout, and base64 of `{"` is `eyJ`, which its
+// JWT pattern masks to `eyJab...` mid-payload. Lowercase hex has no uppercase,
+// so it matches neither the JWT nor the mixed-case opaque-token pattern.
 // ponytail: chunk reads still cost N concurrent shell.exec calls; swap for one
 // call if the gateway cap is raised or a file-read RPC lands.
 export function deriveChunkOffsets(byteLength, chunkSize = 3800) {
@@ -671,20 +674,31 @@ export async function readChunksConcurrently(byteLength, readChunk, options = {}
   return chunks.join('')
 }
 
+// Throws instead of skipping foreign chars: a redaction mask ('...') in the
+// stream means bytes were lost, and a silently truncated JSON is worse.
+export function hexToUtf8(hex) {
+  const clean = String(hex).replace(/\s+/g, '')
+  if (/[^0-9a-f]/.test(clean) || clean.length % 2) throw new Error('shell output was altered in transit (non-hex bytes)')
+  const bytes = new Uint8Array(clean.length / 2)
+  for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16)
+  return new TextDecoder('utf-8').decode(bytes)
+}
+
 async function shBig(cmd) {
   const tag = `ghprs.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
-  const raw = `/tmp/${tag}.raw`, b64 = `/tmp/${tag}.b64`
+  const raw = `/tmp/${tag}.raw`, hex = `/tmp/${tag}.hex`
   try {
-    await sh(`${cmd} > ${sq(raw)} && base64 < ${sq(raw)} > ${sq(b64)}`)
-    const byteLength = Number(await sh(`wc -c < ${sq(b64)}`))
+    // od -An -v -tx1 is POSIX: BSD od on macOS, coreutils od in Git for Windows' bash.
+    // -v keeps repeated lines (od collapses them to `*` otherwise).
+    await sh(`${cmd} > ${sq(raw)} && od -An -v -tx1 < ${sq(raw)} | tr -cd 0-9a-f > ${sq(hex)}`)
+    const byteLength = Number(await sh(`wc -c < ${sq(hex)}`))
     const out = await readChunksConcurrently(
       byteLength,
-      off => sh(`tail -c +${off} ${sq(b64)} | head -c 3800`),
+      off => sh(`tail -c +${off} ${sq(hex)} | head -c 3800`),
     )
-    const bin = atob(out.replace(/\s+/g, ''))
-    return new TextDecoder('utf-8').decode(Uint8Array.from(bin, c => c.charCodeAt(0)))
+    return hexToUtf8(out)
   } finally {
-    sh(`unlink ${sq(raw)}; unlink ${sq(b64)}`).catch(() => {})
+    sh(`unlink ${sq(raw)}; unlink ${sq(hex)}`).catch(() => {})
   }
 }
 

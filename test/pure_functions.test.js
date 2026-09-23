@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import {
   labelTextColor,
   parsePatch,
@@ -42,6 +43,7 @@ import {
   issuePlan,
   deriveChunkOffsets,
   readChunksConcurrently,
+  hexToUtf8,
   listKeyAction,
   buildAssignPlan,
   listAssignableBots,
@@ -625,6 +627,21 @@ test('Issue #28: readChunksConcurrently bounds overlapping reads and preserves b
   assert.ok(peak > 1)
   assert.ok(peak <= 4)
   assert.equal(Buffer.from(output.replace(/\s+/g, ''), 'base64').toString('utf8'), payload)
+})
+
+test('shBig hex transport round-trips through the real od pipeline', () => {
+  // `{"` at a 3-byte boundary is what base64 turned into `eyJ`, the JWT prefix the
+  // gateway redactor masks. Repeated lines pin od -v (od collapses them to `*`).
+  const payload = `{"body":"## Context 😀"}\n${'same line\n'.repeat(40)}{"a":1}`
+  const hex = execFileSync('sh', ['-c', 'od -An -v -tx1 | tr -cd 0-9a-f'], { input: payload, encoding: 'utf8' })
+  assert.match(hex, /^[0-9a-f]+$/)
+  assert.equal(hexToUtf8(hex), payload)
+})
+
+test('hexToUtf8 fails loudly on a redacted stream', () => {
+  assert.equal(hexToUtf8('7b22 7d\n'), '{"}')
+  assert.throws(() => hexToUtf8('7b22...7d'), /altered in transit/)
+  assert.throws(() => hexToUtf8('7b2'), /altered in transit/)
 })
 
 test('Issue #31: listKeyAction handles only scoped list shortcuts', () => {

@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 
 // Shell invocation is platform-sensitive: the same command string crosses a
 // POSIX login shell on macOS/Linux and cmd.exe on Windows. Everything the
-// plugin pipes through `shBig` (base64 / wc / tail / printf / unlink / /tmp)
+// plugin pipes through `shBig` (od / tr / wc / tail / printf / unlink / /tmp)
 // only exists on the POSIX side.
 const source = readFileSync(new URL('../desktop/plugin.js', import.meta.url), 'utf8')
 
