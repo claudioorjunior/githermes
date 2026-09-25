@@ -34,7 +34,12 @@ test('Issue #34: polling is tiered, focus-aware and paused with the pane', () =>
   assert.equal((source.match(/refetchOnWindowFocus: true/g) || []).length, 8)
   assert.ok(source.includes("refetchInterval: q => livePollInterval(headerQ.data, { kind: 'checks', checks: q.state.data })"))
   assert.equal((source.match(/livePollInterval\(headerQ\.data, \{ kind: 'slow' \}\)/g) || []).length, 2)
-  assert.ok(source.includes("const paneVisible = useValue(typeof host.paneVisibility === 'function' ? host.paneVisibility(PANE_ID) : $alwaysVisible)"))
+  // The pane can be registered as a workspace tile (openWorkspace) or the plain
+  // way, so visibility resolves through the helper that knows which id is live;
+  // the pause-with-the-pane intent holds.
+  assert.ok(source.includes('const paneVisible = useValue(paneVisibleAtom())'))
+  assert.ok(source.includes('function paneVisibleAtom() {'))
+  assert.ok(source.includes('host.paneVisibility(usesWorkspaceTile() ? WORKSPACE_PANE_ID : PANE_ID)'))
   assert.ok(source.includes("queryKey: [ID, 'pr-checks', repo, String(number)]"))
 })
 

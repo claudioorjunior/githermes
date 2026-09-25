@@ -393,10 +393,80 @@ function DiffCount({ add, del, className }) {
   ] })
 }
 
+// The pane is registered through `host.openWorkspace`, whose returned disposer
+// runs the same teardown the tile's own Close does — that is the one door a
+// plugin has to collapse its own pane. `host.paneVisibility` reports whether the
+// tile is on screen, so the titlebar button can label itself honestly and flip
+// both ways. Shells without `openWorkspace` keep the previous plain
+// registration (below), and the button falls back to the reveal event.
+const WORKSPACE_KEY = 'github'
+const WORKSPACE_PANE_ID = `plugin-workspace:${WORKSPACE_KEY}`
+let paneRender = null
+let paneClose = null
+
+const usesWorkspaceTile = () => typeof host.openWorkspace === 'function'
+
+/** Live on-screen truth for the pane, whichever registration door was used. */
+function paneVisibleAtom() {
+  if (typeof host.paneVisibility !== 'function') {
+    return $alwaysVisible
+  }
+
+  return host.paneVisibility(usesWorkspaceTile() ? WORKSPACE_PANE_ID : PANE_ID)
+}
+
+function paneIsOpen() {
+  return usesWorkspaceTile() ? Boolean(paneClose) : Boolean(paneVisibleAtom().get())
+}
+
 function openGithubPane() {
+  if (paneClose || !paneRender) {
+    return
+  }
+
+  if (usesWorkspaceTile()) {
+    try {
+      if (typeof host.undismissPane === 'function') {
+        host.undismissPane(WORKSPACE_PANE_ID)
+      }
+
+      paneClose = host.openWorkspace(WORKSPACE_KEY, {
+        dock: { pane: 'workspace', pos: 'right' },
+        minWidth: '320px',
+        onClose: () => {
+          paneClose = null
+        },
+        render: () => paneRender(),
+        title: 'GitHub'
+      })
+
+      return
+    } catch {
+      paneClose = null
+    }
+  }
+
   try {
     window.dispatchEvent(new CustomEvent(REVEAL, { detail: { id: PANE_ID, mode: 'open' } }))
   } catch { /* older shells ignore */ }
+}
+
+function collapseGithubPane() {
+  const close = paneClose
+
+  paneClose = null
+
+  try {
+    close?.()
+  } catch { /* older shells ignore */ }
+}
+
+function toggleGithubPane() {
+  if (paneIsOpen()) {
+    collapseGithubPane()
+  } else {
+    openGithubPane()
+  }
 }
 
 function openGithubPage() {
@@ -1274,13 +1344,15 @@ function StatePill({ d }) {
 }
 
 function TitlebarGithubButton() {
+  const paneOpen = useValue(paneVisibleAtom())
+
   return jsx(Tip, {
-    label: 'Open GitHub pane',
+    label: paneOpen ? 'Collapse GitHub pane' : 'Open GitHub pane',
     children: jsx(Button, {
       variant: 'ghost',
       size: 'sm',
       className: 'h-6 px-2 gap-1.5',
-      onClick: openGithubPane,
+      onClick: toggleGithubPane,
       children: jsxs('span', {
         className: 'flex items-center gap-1.5',
         children: [
@@ -3510,7 +3582,7 @@ function useListKeyboardFlow(query) {
 
 function GitHubPane() {
   const { reposQ, repo, repoOptions, tab, query, selPr, selIssue } = useGitHubShellState()
-  const paneVisible = useValue(typeof host.paneVisibility === 'function' ? host.paneVisibility(PANE_ID) : $alwaysVisible)
+  const paneVisible = useValue(paneVisibleAtom())
   const keyboard = useListKeyboardFlow(query)
 
   const showPr = tab === 'prs' && selPr != null
@@ -3667,18 +3739,34 @@ export default {
     ] })
     const pageShell = () => jsxs('div', { className: 'githermes-pane h-full min-h-0 min-w-0 max-w-full overflow-hidden bg-(--ui-editor-surface-background)', children: [jsx('style', { children: PANE_WRAP_CSS }), jsx(GithubPage, {})] })
 
-    ctx.register({
-      id: 'pane',
-      area: PANES_AREA,
-      title: 'GitHub',
-      data: {
-        placement: 'main',
-        dock: { pane: 'workspace', pos: 'right' },
-        width: '440px',
-        revealAliases: [PANE_ID, 'github'],
-      },
-      render: paneWrap,
-    })
+    // A shell with `host.openWorkspace` gets a workspace tile we can collapse
+    // and re-open from the titlebar button, and whose own Close routes through
+    // our teardown. Older shells keep the plain registration (unchanged), which
+    // stays reachable through the zone menu and its auto-registered toggle.
+    paneRender = paneWrap
+
+    if (typeof host.openWorkspace === 'function') {
+      openGithubPane()
+    } else {
+      ctx.register({
+        id: 'pane',
+        area: PANES_AREA,
+        title: 'GitHub',
+        data: {
+          placement: 'main',
+          // Native panes (sessions / files / review) declare this: it folds the
+          // pane on narrow viewports and puts its zone in the collapse system.
+          collapsible: true,
+          dock: { pane: 'workspace', pos: 'right' },
+          // Standing chrome: no close-X; the tab is shown/hidden from the zone
+          // menu with an auto-registered ⌘K toggle.
+          hideOnly: true,
+          revealAliases: [PANE_ID, 'github'],
+          width: '440px',
+        },
+        render: paneWrap,
+      })
+    }
     // Dedicated full page (workspace route) — does NOT replace the pane.
     // Sidebar orders on `order` within SIDEBAR_NAV_AREA; this keeps GitHub
     // near the top. Falls back to literals if the SDK build omits the exports.
