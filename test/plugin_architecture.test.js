@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { paneTogglePlan } from '../desktop/plugin.js'
 
 const source = readFileSync(new URL('../desktop/plugin.js', import.meta.url), 'utf8')
 
@@ -41,6 +42,40 @@ test('Issue #34: polling is tiered, focus-aware and paused with the pane', () =>
   assert.ok(source.includes('function paneVisibleAtom() {'))
   assert.ok(source.includes('host.paneVisibility(usesWorkspaceTile() ? WORKSPACE_PANE_ID : PANE_ID)'))
   assert.ok(source.includes("queryKey: [ID, 'pr-checks', repo, String(number)]"))
+})
+
+test('Collapsible pane: the titlebar tip and its click follow on-screen truth', () => {
+  // Visible + a collapse door (host.openWorkspace exists) → collapse.
+  assert.deepEqual(paneTogglePlan({ visible: true, canCollapse: true }),
+    { action: 'collapse', tip: 'Collapse GitHub pane' })
+  // Visible on a shell with no door: the button must not claim an action it
+  // cannot perform, and the click stays the reveal it always was.
+  assert.deepEqual(paneTogglePlan({ visible: true, canCollapse: false }),
+    { action: 'open', tip: 'Open GitHub pane' })
+  // Registered but hidden (backgrounded / dismissed / collapsed zone) → open,
+  // never "collapse a pane the tip just called Open".
+  assert.deepEqual(paneTogglePlan({ visible: false, canCollapse: true }),
+    { action: 'open', tip: 'Open GitHub pane' })
+  assert.deepEqual(paneTogglePlan({ visible: false, canCollapse: false }),
+    { action: 'open', tip: 'Open GitHub pane' })
+
+  // The component takes both the label and the click from that one decision.
+  const button = source.slice(source.indexOf('function TitlebarGithubButton'), source.indexOf('function GithubPane'))
+  assert.ok(button.includes('const plan = paneTogglePlan({ visible, canCollapse: usesWorkspaceTile() })'))
+  assert.ok(button.includes('label: plan.tip'))
+  assert.ok(button.includes("onClick: plan.action === 'collapse' ? collapseGithubPane : openGithubPane"))
+})
+
+test('Collapsible pane: registration state is not treated as on-screen truth', () => {
+  const open = source.slice(source.indexOf('function openGithubPane'), source.indexOf('function collapseGithubPane'))
+  assert.ok(open.includes('if (!paneRender)'), 'nothing to render yet is the only bail-out')
+  assert.ok(!open.includes('if (paneClose || !paneRender)'),
+    'a set disposer only means the tile is registered, not that it is showing')
+  assert.ok(open.includes('host.revealPane(WORKSPACE_PANE_ID)'), 'hidden tiles must be fronted')
+  // openWorkspace registers outside ctx.register, so the plugin must tear its
+  // own tile down on unload / disable / hot-save.
+  assert.ok(source.includes('ctx.onDispose(collapseGithubPane)'))
+  assert.ok(!source.includes('function paneIsOpen()'))
 })
 
 test('Issue #29: Markdown parsing is memoized at the component top level', () => {

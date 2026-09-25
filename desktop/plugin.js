@@ -415,21 +415,39 @@ function paneVisibleAtom() {
   return host.paneVisibility(usesWorkspaceTile() ? WORKSPACE_PANE_ID : PANE_ID)
 }
 
-function paneIsOpen() {
-  return usesWorkspaceTile() ? Boolean(paneClose) : Boolean(paneVisibleAtom().get())
+/** One decision for the titlebar button, so its tip and its click cannot drift.
+ *  Visibility alone is not enough: a shell without `openWorkspace` gives the
+ *  plugin no door to collapse its own pane, and a registered tile can still be
+ *  hidden (backgrounded, dismissed, collapsed zone) — treating registration as
+ *  on-screen truth would then collapse a pane the tip calls Open. */
+export function paneTogglePlan({ visible, canCollapse }) {
+  return visible && canCollapse
+    ? { action: 'collapse', tip: 'Collapse GitHub pane' }
+    : { action: 'open', tip: 'Open GitHub pane' }
 }
 
 function openGithubPane() {
-  if (paneClose || !paneRender) {
+  if (!paneRender) {
     return
   }
 
   if (usesWorkspaceTile()) {
-    try {
-      if (typeof host.undismissPane === 'function') {
-        host.undismissPane(WORKSPACE_PANE_ID)
+    // A registered tile that is merely hidden must be fronted, not re-opened:
+    // `host.revealPane` is the explicit door, and re-calling `openWorkspace`
+    // with the same id re-fronts on shells that predate it (the registry keys
+    // by pane id, so this replaces rather than duplicates the tile).
+    if (paneClose) {
+      if (typeof host.revealPane === 'function') {
+        try {
+          host.revealPane(WORKSPACE_PANE_ID)
+          return
+        } catch { /* fall through to a re-open */ }
       }
+    } else if (typeof host.undismissPane === 'function') {
+      host.undismissPane(WORKSPACE_PANE_ID)
+    }
 
+    try {
       paneClose = host.openWorkspace(WORKSPACE_KEY, {
         dock: { pane: 'workspace', pos: 'right' },
         minWidth: '320px',
@@ -459,14 +477,6 @@ function collapseGithubPane() {
   try {
     close?.()
   } catch { /* older shells ignore */ }
-}
-
-function toggleGithubPane() {
-  if (paneIsOpen()) {
-    collapseGithubPane()
-  } else {
-    openGithubPane()
-  }
 }
 
 function openGithubPage() {
@@ -1344,15 +1354,16 @@ function StatePill({ d }) {
 }
 
 function TitlebarGithubButton() {
-  const paneOpen = useValue(paneVisibleAtom())
+  const visible = useValue(paneVisibleAtom())
+  const plan = paneTogglePlan({ visible, canCollapse: usesWorkspaceTile() })
 
   return jsx(Tip, {
-    label: paneOpen ? 'Collapse GitHub pane' : 'Open GitHub pane',
+    label: plan.tip,
     children: jsx(Button, {
       variant: 'ghost',
       size: 'sm',
       className: 'h-6 px-2 gap-1.5',
-      onClick: toggleGithubPane,
+      onClick: plan.action === 'collapse' ? collapseGithubPane : openGithubPane,
       children: jsxs('span', {
         className: 'flex items-center gap-1.5',
         children: [
@@ -3744,6 +3755,13 @@ export default {
     // our teardown. Older shells keep the plain registration (unchanged), which
     // stays reachable through the zone menu and its auto-registered toggle.
     paneRender = paneWrap
+
+    // `host.openWorkspace` registers on the raw pane registry rather than through
+    // `ctx.register`, so this plugin's own lifecycle is what tears the tile down:
+    // without it, disable / reload / hot-save leaves a zombie GitHub tab behind.
+    if (typeof ctx.onDispose === 'function') {
+      ctx.onDispose(collapseGithubPane)
+    }
 
     if (typeof host.openWorkspace === 'function') {
       openGithubPane()
