@@ -732,10 +732,12 @@ async function readHexFromRaw(raw, hex) {
   return decodeHex(out)
 }
 
-// `parse` doubles as the validity oracle: a read that decodes but yields the
-// wrong bytes (a redactor swapping characters in place) only shows up there, and
-// then the hex re-read gets its turn before the error reaches the caller.
-async function shBig(cmd, parse) {
+// A read that fails its integrity check, or that decodes but does not satisfy
+// `parse` (a redactor swapping characters in place), gets one hex re-read from
+// the same raw file. Hex is the encoding no redaction pattern can match, so the
+// transport never hands a corrupt payload back to the caller; `parse` stays as
+// the extra oracle for a read that is valid base64 but the wrong bytes.
+export async function shBig(cmd, parse) {
   const tag = `ghprs.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
   const raw = `/tmp/${tag}.raw`, b64 = `/tmp/${tag}.b64`, hex = `/tmp/${tag}.hex`
   const finish = text => (parse ? parse(text) : text)
@@ -746,13 +748,9 @@ async function shBig(cmd, parse) {
       byteLength,
       off => sh(`tail -c +${off} ${sq(b64)} | head -c ${BIG_SLICE}`),
     )
-    if (out) {
-      try {
-        return finish(decodeBig64(out))
-      } catch (error) {
-        if (!parse) throw error
-      }
-    }
+    try {
+      if (out) return finish(decodeBig64(out))
+    } catch { /* touched in transit — the hex re-read below is the second chance */ }
     return finish(await readHexFromRaw(raw, hex))
   } finally {
     sh(`unlink ${sq(raw)}; unlink ${sq(b64)}; unlink ${sq(hex)}`).catch(() => {})
