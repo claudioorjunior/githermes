@@ -39,7 +39,7 @@ A single-file desktop plugin (`@hermes/plugin-sdk`) that shows your repository's
 ## Install
 
 ```bash
-hermes plugins install claudioorjunior/githermes --enable
+hermes plugins install claudiumio/githermes --enable
 ```
 
 Or manually: drop this folder into `~/.hermes/plugins/githermes/` (unified package — the desktop half lives at `desktop/plugin.js`), or copy `desktop/plugin.js` to `~/.hermes/desktop-plugins/githermes/plugin.js` (standalone disk door). The app hot-reloads on save.
