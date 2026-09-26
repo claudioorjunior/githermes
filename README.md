@@ -53,7 +53,7 @@ The plugin **id** changed (`github-prs` → `githermes`), so the old install mus
 - Disk plugins load **uncompiled**: UI is written with `jsx()`/`jsxs()` calls, no JSX syntax, no build step.
 - Only `@hermes/plugin-sdk`, `react`, and `react/jsx-runtime` are importable.
 - Tailwind classes must already exist in the app's compiled CSS — arbitrary `var()` bracket forms (`bg-[var(--x)]`) are silently dead at runtime. Use the paren shorthand (`text-(--ui-text-tertiary)`) or scoped `<style>` blocks with real theme variables.
-- Large `gh` payloads go through `shBig` / `shJsonBig` (base64 chunks under the gateway stdout cap). Lists are capped at 30 rows by design.
+- Large `gh` payloads go through `shBig` / `shJsonBig` (base64 chunks under the gateway stdout cap; staged single-line so `rev` cannot reverse per wrapped line, decoded with an integrity check, and re-read as hex — which no redaction pattern can match — if a slice comes back touched). Lists are capped at 30 rows by design.
 
 ## Status & contributing
 

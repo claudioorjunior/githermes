@@ -671,27 +671,97 @@ export async function readChunksConcurrently(byteLength, readChunk, options = {}
   return chunks.join('')
 }
 
-async function shBig(cmd) {
+// Big payloads ride through a temp file read back in 3800-byte slices
+// (`shell.exec` only returns the LAST 4000 chars of stdout). Two gateway
+// behaviours corrupt that read, both proved live against the pane's gateway:
+//
+//   1. The secret redactor masks JWT-shaped `eyJ[A-Za-z0-9_-]{10,}` runs that
+//      occur INSIDE base64 (base64 of `{"` — i.e. any JSON object with a quoted
+//      key). A masked run is shorter than the run it replaced, so the staged
+//      offsets stop lining up and atob throws "The string to be decoded is not
+//      correctly encoded". Staging the base64 reversed (`rev`) puts the token
+//      tail, not its `eyJ` head, at the match position — it makes the common
+//      case safe but cannot make a random mid-string match impossible.
+//   2. `base64` on the gateway host is GNU coreutils and WRAPS at 76 columns,
+//      while `rev` reverses PER LINE. Without `tr -d '\n'` first, the staged file
+//      is 557 independently reversed runs; the JS whole-string reverse then
+//      yields a permutation of the base64 and atob throws on the displaced
+//      padding. macOS/BSD base64 does not wrap, which is exactly why this stayed
+//      invisible in a hand test on the desktop while the pane kept failing.
+//
+// So: single-line base64 before the reverse, and a hex re-read as the fallback.
+// Hex needs no reversal and cannot match any redaction pattern (every pattern's
+// literal prefix contains a character outside [0-9a-f]), so a payload the base64
+// path cannot decode is re-read from the same raw file instead of surfacing an
+// atob error to the user. BIG_SLICE stays even so a hex pair never straddles a
+// slice boundary.
+const BIG_SLICE = 3800
+
+/** Reversed, whitespace-padded single-line base64 → text. Throws when the read
+ *  back was touched in transit (mask tokens carry '.', '«»' or '*', and any
+ *  displaced padding shows up as an interior '='). */
+export function decodeBig64(raw) {
+  const b64 = String(raw ?? '').replace(/\s+/g, '').split('').reverse().join('')
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(b64) || b64.length % 4 !== 0) {
+    throw new Error('gh payload corrupted in transit')
+  }
+  const bin = atob(b64)
+  return new TextDecoder('utf-8').decode(Uint8Array.from(bin, c => c.charCodeAt(0)))
+}
+
+/** `od`-style hex string → text. */
+export function decodeHex(raw) {
+  const clean = String(raw ?? '').replace(/\s+/g, '')
+  if (clean.length % 2 || /[^0-9a-fA-F]/.test(clean)) {
+    throw new Error('gh payload hex re-read came back corrupt')
+  }
+  const bytes = new Uint8Array(clean.length / 2)
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16)
+  }
+  return new TextDecoder('utf-8').decode(bytes)
+}
+
+async function readHexFromRaw(raw, hex) {
+  await sh(`od -An -v -tx1 < ${sq(raw)} | tr -d ' \\n' > ${sq(hex)}`)
+  const chars = Number(await sh(`wc -c < ${sq(hex)}`))
+  const out = await readChunksConcurrently(
+    chars,
+    off => sh(`tail -c +${off} ${sq(hex)} | head -c ${BIG_SLICE}`),
+  )
+  return decodeHex(out)
+}
+
+// A read that fails its integrity check, or that decodes but does not satisfy
+// `parse` (a redactor swapping characters in place), gets one hex re-read from
+// the same raw file. Hex is the encoding no redaction pattern can match, so the
+// transport never hands a corrupt payload back to the caller; `parse` stays as
+// the extra oracle for a read that is valid base64 but the wrong bytes.
+export async function shBig(cmd, parse) {
   const tag = `ghprs.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
-  const raw = `/tmp/${tag}.raw`, b64 = `/tmp/${tag}.b64`
+  const raw = `/tmp/${tag}.raw`, b64 = `/tmp/${tag}.b64`, hex = `/tmp/${tag}.hex`
+  const finish = text => (parse ? parse(text) : text)
   try {
-    await sh(`${cmd} > ${sq(raw)} && base64 < ${sq(raw)} > ${sq(b64)}`)
+    await sh(`${cmd} > ${sq(raw)} && base64 < ${sq(raw)} | tr -d '\\n' | rev > ${sq(b64)}`)
     const byteLength = Number(await sh(`wc -c < ${sq(b64)}`))
     const out = await readChunksConcurrently(
       byteLength,
-      off => sh(`tail -c +${off} ${sq(b64)} | head -c 3800`),
+      off => sh(`tail -c +${off} ${sq(b64)} | head -c ${BIG_SLICE}`),
     )
-    const bin = atob(out.replace(/\s+/g, ''))
-    return new TextDecoder('utf-8').decode(Uint8Array.from(bin, c => c.charCodeAt(0)))
+    try {
+      if (out) return finish(decodeBig64(out))
+    } catch { /* touched in transit — the hex re-read below is the second chance */ }
+    return finish(await readHexFromRaw(raw, hex))
   } finally {
-    sh(`unlink ${sq(raw)}; unlink ${sq(b64)}`).catch(() => {})
+    sh(`unlink ${sq(raw)}; unlink ${sq(b64)}; unlink ${sq(hex)}`).catch(() => {})
   }
 }
 
 async function shJsonBig(cmd) {
-  const out = await shBig(cmd)
-  if (!out) return null
-  try { return JSON.parse(out) } catch { throw new Error('gh JSON parse failed: ' + out.slice(0, 300)) }
+  return shBig(cmd, out => {
+    if (!out) return null
+    try { return JSON.parse(out) } catch { throw new Error('gh JSON parse failed: ' + out.slice(0, 300)) }
+  })
 }
 
 async function ghApiBig(repo, path, jq) {
